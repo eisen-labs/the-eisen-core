@@ -145,6 +145,7 @@ fn walk(
             lines,
             last_write: None,
             changed: None,
+            tokens: data.tokens,
         },
     );
 

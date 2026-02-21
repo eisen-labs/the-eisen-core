@@ -75,6 +75,8 @@ pub struct NodeData {
     pub path: String,
     #[serde(skip)]
     pub calls: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u32>,
 }
 
 impl NodeData {
@@ -93,6 +95,7 @@ impl NodeData {
             end_line: 0,
             path,
             calls: Vec::new(),
+            tokens: None,
         }
     }
 
@@ -104,6 +107,11 @@ impl NodeData {
 
     pub fn with_calls(mut self, calls: Vec<String>) -> Self {
         self.calls = calls;
+        self
+    }
+
+    pub fn with_tokens(mut self, tokens: u32) -> Self {
+        self.tokens = Some(tokens);
         self
     }
 }

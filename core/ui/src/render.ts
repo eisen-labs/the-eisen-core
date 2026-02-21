@@ -91,6 +91,7 @@ interface GraphNode {
   lastAction?: "read" | "write" | "search";
   agentHeat?: Record<string, number>;
   agentContext?: Record<string, boolean>;
+  tokens?: number;
   x?: number;
   y?: number;
 }
@@ -1352,6 +1353,7 @@ export class Renderer {
           lastAction,
           agentHeat: node.agentHeat,
           agentContext: node.agentContext,
+          tokens: node.tokens,
         };
         this.nodes.push(gn);
         this.nodeMap.set(id, gn);
@@ -1364,6 +1366,7 @@ export class Renderer {
           lastAction,
           agentHeat: node.agentHeat,
           agentContext: node.agentContext,
+          tokens: node.tokens,
         });
       }
     }

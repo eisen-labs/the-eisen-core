@@ -1,14 +1,26 @@
 use ignore::WalkBuilder;
 use indextree::NodeId;
 use log::warn;
+use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use tiktoken_rs::CoreBPE;
 
 use crate::parser::languages::{
     python::PythonParser, rust::RustParser, typescript::TypeScriptParser, LanguageParser,
 };
 use crate::parser::tree::SymbolTree;
 use crate::parser::types::{NodeData, NodeKind};
+
+/// Lazily initialised BPE tokeniser (o200k_base, GPT-4o encoding).
+/// Built once on first use and reused for every file in the walk.
+static BPE: Lazy<CoreBPE> =
+    Lazy::new(|| tiktoken_rs::o200k_base().expect("failed to initialise o200k_base tokeniser"));
+
+/// Count the number of tokens in `content` using the o200k_base encoding.
+fn count_tokens(content: &str) -> u32 {
+    BPE.encode_ordinary(content).len() as u32
+}
 
 /// Directory/file names to skip in addition to .gitignore rules.
 const IGNORED_NAMES: &[&str] = &[
@@ -160,12 +172,17 @@ impl<'a> DirectoryWalker<'a> {
         }
 
         let path_str = path.to_string_lossy().to_string();
-        let data = NodeData::new(
-            0,
-            name.to_string(),
-            NodeKind::File(extension.unwrap_or_default()),
-            path_str,
-        );
+        let ext = extension.unwrap_or_default();
+        let mut data = NodeData::new(0, name.to_string(), NodeKind::File(ext), path_str);
+
+        // Read content for token counting (skip binary / unreadable files).
+        if let Ok(content) = std::fs::read_to_string(path) {
+            let line_count = content.lines().count() as u32;
+            data = data
+                .with_lines(1, line_count.max(1))
+                .with_tokens(count_tokens(&content));
+        }
+
         let node_id = tree.add_node(Some(parent_id), data);
         path_to_node.insert(path.to_path_buf(), node_id);
 
@@ -199,13 +216,15 @@ impl<'a> DirectoryWalker<'a> {
         };
 
         let line_count = content.lines().count() as u32;
+        let token_count = count_tokens(&content);
         let file_data = NodeData::new(
             0,
             name.to_string(),
             NodeKind::File("py".to_string()),
             path_str.clone(),
         )
-        .with_lines(1, line_count.max(1));
+        .with_lines(1, line_count.max(1))
+        .with_tokens(token_count);
         let file_id = tree.add_node(Some(parent_id), file_data);
         path_to_node.insert(path.to_path_buf(), file_id);
 
@@ -280,8 +299,10 @@ impl<'a> DirectoryWalker<'a> {
         };
 
         let line_count = content.lines().count() as u32;
+        let token_count = count_tokens(&content);
         let file_data = NodeData::new(0, name.to_string(), NodeKind::File(ext), path_str.clone())
-            .with_lines(1, line_count.max(1));
+            .with_lines(1, line_count.max(1))
+            .with_tokens(token_count);
         let file_id = tree.add_node(Some(parent_id), file_data);
         path_to_node.insert(path.to_path_buf(), file_id);
 
@@ -351,13 +372,15 @@ impl<'a> DirectoryWalker<'a> {
         };
 
         let line_count = content.lines().count() as u32;
+        let token_count = count_tokens(&content);
         let file_data = NodeData::new(
             0,
             name.to_string(),
             NodeKind::File("rs".to_string()),
             path_str.clone(),
         )
-        .with_lines(1, line_count.max(1));
+        .with_lines(1, line_count.max(1))
+        .with_tokens(token_count);
         let file_id = tree.add_node(Some(parent_id), file_data);
         path_to_node.insert(path.to_path_buf(), file_id);
 

@@ -20,6 +20,7 @@ interface UiNode {
   lastAction?: "read" | "write" | "search";
   agentHeat?: Record<string, number>;
   agentContext?: Record<string, boolean>;
+  tokens?: number;
 }
 
 /**
@@ -352,6 +353,7 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
                 end: Number(rawNode.lines.end) || 0,
               }
             : undefined,
+        tokens: typeof rawNode?.tokens === "number" ? rawNode.tokens : undefined,
       };
     }
 

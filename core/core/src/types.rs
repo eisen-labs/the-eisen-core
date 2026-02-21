@@ -404,6 +404,8 @@ pub struct UiNode {
     pub last_write: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]

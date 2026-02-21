@@ -12,6 +12,7 @@ export interface Node {
   inContext?: boolean;
   changed?: boolean;
   lastAction?: "read" | "write" | "search";
+  tokens?: number;
 
   // Multi-agent attribution
   agentHeat?: Record<string, number>;
