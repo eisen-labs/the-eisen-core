@@ -27,6 +27,8 @@ jobs:
         run: pnpm -C ui exec tsc --noEmit -p tsconfig.json
       - name: Typecheck Extension
         run: pnpm -C extension exec tsc --noEmit -p tsconfig.json
+      - name: Build
+        run: pnpm run build
 
   rust:
     runs-on: ubuntu-latest
