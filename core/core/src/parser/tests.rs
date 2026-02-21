@@ -501,37 +501,6 @@ def helper():
     }
 
     #[test]
-    fn test_serialization_flat_json() {
-        let mut tree = SymbolTree::new();
-
-        let root_data = NodeData::new(
-            0,
-            "project".to_string(),
-            NodeKind::Folder,
-            "/project".to_string(),
-        );
-        let root_id = tree.add_node(None, root_data);
-
-        let file_data = NodeData::new(
-            1,
-            "main.py".to_string(),
-            NodeKind::File("py".to_string()),
-            "/project/main.py".to_string(),
-        );
-        tree.add_node(Some(root_id), file_data);
-
-        let json = tree.to_flat_json();
-
-        // Verify flat structure
-        assert!(json.is_array());
-        let arr = json.as_array().unwrap();
-        assert_eq!(arr.len(), 2);
-
-        assert_eq!(arr[0]["name"], "project");
-        assert_eq!(arr[1]["name"], "main.py");
-    }
-
-    #[test]
     fn test_init_tree() {
         let temp_dir = TempDir::new().unwrap();
         let root = temp_dir.path();

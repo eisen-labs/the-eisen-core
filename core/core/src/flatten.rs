@@ -1,3 +1,8 @@
+//! Flattens a `SymbolTree` (file/class/method hierarchy) into a `UiSnapshot`
+//! suitable for the graph webview. Maps parser-level `NodeKind` variants to the
+//! simplified set the UI understands (folder, file, class, method, function)
+//! and resolves function call edges between symbols.
+
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -152,6 +157,8 @@ fn walk(
     }
 }
 
+/// Map parser NodeKind to the simplified UI kind used by the graph.
+/// The graph only understands: folder, file, class, method, function.
 fn ui_kind(kind: &NodeKind) -> &str {
     match kind {
         NodeKind::Folder => "folder",

@@ -17,7 +17,6 @@ pub struct Symbol {
 }
 
 pub trait LanguageParser: Send + Sync {
-    #[allow(dead_code)]
     fn can_parse(&self, extension: &str) -> bool;
     fn parse_file(&self, content: &str, path: &Path) -> Vec<Symbol>;
 }

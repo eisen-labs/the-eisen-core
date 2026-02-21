@@ -10,30 +10,29 @@ use crate::parser::languages::{
 use crate::parser::tree::SymbolTree;
 use crate::parser::types::{NodeData, NodeKind};
 
+/// Directory/file names to skip in addition to .gitignore rules.
+const IGNORED_NAMES: &[&str] = &[
+    ".git",
+    "target",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".tox",
+    "dist",
+    "build",
+    ".egg-info",
+];
+
 pub struct DirectoryWalker<'a> {
     root_path: &'a Path,
-    ignore_patterns: Vec<&'static str>,
 }
 
 impl<'a> DirectoryWalker<'a> {
     pub fn new(root_path: &'a Path) -> Self {
-        Self {
-            root_path,
-            ignore_patterns: vec![
-                ".git",
-                "target",
-                "node_modules",
-                "__pycache__",
-                ".venv",
-                "venv",
-                ".pytest_cache",
-                ".mypy_cache",
-                ".tox",
-                "dist",
-                "build",
-                ".egg-info",
-            ],
-        }
+        Self { root_path }
     }
 
     pub fn walk_and_build(&self, tree: &mut SymbolTree) -> anyhow::Result<()> {
@@ -114,19 +113,12 @@ impl<'a> DirectoryWalker<'a> {
         if file_name.starts_with('.')
             && file_name != "."
             && file_name != ".."
-            && self
-                .ignore_patterns
-                .iter()
-                .any(|p| file_name.starts_with(*p))
+            && IGNORED_NAMES.iter().any(|p| file_name.starts_with(*p))
         {
             return true;
         }
 
-        if self
-            .ignore_patterns
-            .iter()
-            .any(|pattern| file_name == *pattern)
-        {
+        if IGNORED_NAMES.iter().any(|name| file_name == *name) {
             return true;
         }
 

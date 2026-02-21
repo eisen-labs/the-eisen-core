@@ -5,15 +5,15 @@
 //! `agent-client-protocol-schema`. Extracted file paths are fed to the
 //! `ContextTracker`.
 //!
-//! ## Channels Covered
+//! ## ACP Methods Handled
 //!
-//! | # | Method                | Direction       | Typed Params                |
-//! |---|----------------------|-----------------|----------------------------|
-//! | 1 | `session/prompt`     | Editor → Agent  | `PromptRequest`            |
-//! | 2 | `session/prompt`     | Editor → Agent  | `PromptRequest`            |
-//! | 5 | `session/update`     | Agent → Editor  | `SessionNotification`      |
-//! | 6 | `fs/read_text_file`  | Agent → Editor  | `ReadTextFileRequest`      |
-//! | 7 | `fs/write_text_file` | Agent → Editor  | `WriteTextFileRequest`     |
+//! | Method                | Direction       | Extraction                          |
+//! |----------------------|-----------------|-------------------------------------|
+//! | `session/prompt`     | Editor > Agent  | Embedded resources & resource links  |
+//! | `session/update`     | Agent > Editor  | Tool call locations & diff paths     |
+//! | `fs/read_text_file`  | Agent > Editor  | File path (Read action)              |
+//! | `fs/write_text_file` | Agent > Editor  | File path (Write action)             |
+//! | `terminal/output`    | Agent > Editor  | File paths in terminal output        |
 //!
 //! ## End-Turn Detection
 //!
@@ -35,10 +35,10 @@ use crate::types::Action;
 // Public entry points — called by proxy.rs for each forwarded line
 // ---------------------------------------------------------------------------
 
-/// Extract context from an editor → agent message line.
+/// Extract context from an editor > agent message line.
 ///
-/// Handles channels #1 (embedded resource) and #2 (resource link) via
-/// `session/prompt`.
+/// Handles `session/prompt` (embedded resources and resource links)
+/// and terminal output responses.
 pub fn extract_upstream(line: &str, tracker: &mut ContextTracker) {
     let v: serde_json::Value = match serde_json::from_str(line) {
         Ok(v) => v,
@@ -84,12 +84,14 @@ pub fn extract_upstream(line: &str, tracker: &mut ContextTracker) {
     }
 }
 
-/// Extract context from an agent → editor message line.
+/// Extract context from an agent > editor message line.
 ///
 /// Handles:
-/// - Channel #5: `session/update` (tool_call / tool_call_update)
-/// - Channel #6: `fs/read_text_file`
-/// - Channel #7: `fs/write_text_file`
+/// - `session/update` (tool_call / tool_call_update)
+/// - `fs/read_text_file`
+/// - `fs/write_text_file`
+/// - `terminal/output`
+/// - Session ID auto-detection and end-turn detection from responses.
 pub fn extract_downstream(line: &str, tracker: &mut ContextTracker) {
     let v: serde_json::Value = match serde_json::from_str(line) {
         Ok(v) => v,
@@ -178,8 +180,8 @@ pub fn extract_downstream(line: &str, tracker: &mut ContextTracker) {
 
 /// Extract file paths from a `session/prompt` request.
 ///
-/// - Channel #1: `ContentBlock::Resource` → embedded file content → `UserProvided`
-/// - Channel #2: `ContentBlock::ResourceLink` → file reference → `UserReferenced`
+/// - `ContentBlock::Resource` > embedded file content > `UserProvided`
+/// - `ContentBlock::ResourceLink` > file reference > `UserReferenced`
 fn extract_from_prompt(req: &PromptRequest, tracker: &mut ContextTracker) {
     for block in &req.prompt {
         match block {
@@ -215,8 +217,8 @@ fn extract_from_prompt(req: &PromptRequest, tracker: &mut ContextTracker) {
 
 /// Extract file paths from a `session/update` notification.
 ///
-/// - Channel #5a: `SessionUpdate::ToolCall` → new tool call with locations
-/// - Channel #5b: `SessionUpdate::ToolCallUpdate` → update with optional locations
+/// - `SessionUpdate::ToolCall` > new tool call with locations
+/// - `SessionUpdate::ToolCallUpdate` > update with optional locations
 fn extract_from_session_update(update: &SessionUpdate, tracker: &mut ContextTracker) {
     match update {
         SessionUpdate::ToolCall(tc) => {
@@ -441,7 +443,7 @@ mod tests {
         ContextTracker::new(TrackerConfig::default())
     }
 
-    // -- Channel #1: Embedded resource in prompt -------------------------
+    // -- Embedded resource in prompt --------------------------------------
 
     #[test]
     fn extract_prompt_embedded_resource() {
@@ -456,7 +458,7 @@ mod tests {
         assert_eq!(node.heat, 1.0);
     }
 
-    // -- Channel #2: Resource link in prompt -----------------------------
+    // -- Resource link in prompt ------------------------------------------
 
     #[test]
     fn extract_prompt_resource_link() {
@@ -469,7 +471,7 @@ mod tests {
         assert_eq!(node.last_action, Action::UserReferenced);
     }
 
-    // -- Channel #5a: Tool call with locations ---------------------------
+    // -- Tool call with locations -----------------------------------------
 
     #[test]
     fn extract_tool_call_read() {
@@ -555,7 +557,7 @@ mod tests {
         assert!(snap.nodes.contains_key("/home/user/src/main.rs"));
     }
 
-    // -- Channel #5b: Tool call update -----------------------------------
+    // -- Tool call update -------------------------------------------------
 
     #[test]
     fn extract_tool_call_update_locations() {
@@ -580,7 +582,7 @@ mod tests {
         assert_eq!(snap.nodes["/home/user/README.md"].last_action, Action::Read);
     }
 
-    // -- Channel #6: fs/read_text_file -----------------------------------
+    // -- fs/read_text_file ------------------------------------------------
 
     #[test]
     fn extract_fs_read_text_file() {
@@ -592,7 +594,7 @@ mod tests {
         assert_eq!(snap.nodes["/home/user/src/db.ts"].last_action, Action::Read);
     }
 
-    // -- Channel #7: fs/write_text_file ----------------------------------
+    // -- fs/write_text_file -----------------------------------------------
 
     #[test]
     fn extract_fs_write_text_file() {
@@ -677,9 +679,9 @@ mod tests {
 
         // Default context_turns = 3. File accessed at turn 0.
         // end_turn checks: current_turn - turn_accessed > context_turns
-        // After 1 end_turn: turn=1, 1-0=1 (not > 3) → still in context
-        // After 3 end_turns: turn=3, 3-0=3 (not > 3) → still in context
-        // After 4 end_turns: turn=4, 4-0=4 (> 3) → exits context
+        // After 1 end_turn: turn=1, 1-0=1 (not > 3) > still in context
+        // After 3 end_turns: turn=3, 3-0=3 (not > 3) > still in context
+        // After 4 end_turns: turn=4, 4-0=4 (> 3) > exits context
         extract_downstream(line, &mut tracker); // turn 1
         assert!(tracker.snapshot().nodes["/a.rs"].in_context);
         extract_downstream(line, &mut tracker); // turn 2
@@ -700,7 +702,7 @@ mod tests {
         let line = r#"{"jsonrpc":"2.0","id":1,"result":{"stopReason":"max_tokens"}}"#;
         extract_downstream(line, &mut tracker);
 
-        // Turn should have advanced (turn 0 → 1)
+        // Turn should have advanced (turn 0 > 1)
         // File was accessed at turn 0, now at turn 1 — still in context (< 3 turns)
         let snap = tracker.snapshot();
         assert!(snap.nodes["/b.rs"].in_context);

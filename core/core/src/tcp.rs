@@ -11,23 +11,6 @@ use crate::tracker::ContextTracker;
 /// Default TCP port for the eisen-core delta server.
 pub const DEFAULT_PORT: u16 = 17320;
 
-/// Parse `--port <N>` from command-line args, falling back to `DEFAULT_PORT`.
-///
-/// Simple manual parsing — no external dependency. Scans `std::env::args()`
-/// for `--port` followed by a valid u16. Dev A can replace this with a
-/// proper arg parser (e.g. clap) when adding the full CLI.
-pub fn parse_port() -> u16 {
-    let args: Vec<String> = std::env::args().collect();
-    for i in 0..args.len().saturating_sub(1) {
-        if args[i] == "--port" {
-            if let Ok(port) = args[i + 1].parse::<u16>() {
-                return port;
-            }
-        }
-    }
-    DEFAULT_PORT
-}
-
 /// Serialized ndJSON line, ready to write to a TCP socket.
 /// Includes the trailing newline.
 pub type WireLine = String;
@@ -74,7 +57,7 @@ pub async fn serve(
 ///    b. Read lines from the client looking for `request_snapshot`.
 ///
 /// Public so integration tests can drive individual client connections
-/// without going through the accept loop. Also re-exported as `serve_client`.
+/// without going through the accept loop.
 pub async fn handle_client(
     stream: tokio::net::TcpStream,
     tracker: Arc<Mutex<ContextTracker>>,
@@ -182,21 +165,8 @@ pub async fn handle_client(
     Ok(())
 }
 
-/// Serialize a delta (or usage message) to a wire line and broadcast it
-/// to all connected TCP clients.
-///
-/// Returns `Ok(receivers)` with the number of active receivers, or
-/// `Err` if there are no active receivers (which is fine — it just means
-/// no TCP clients are connected).
-/// Alias for `handle_client` — convenience name for integration tests.
-pub async fn serve_client(
-    stream: tokio::net::TcpStream,
-    tracker: Arc<Mutex<ContextTracker>>,
-    delta_rx: broadcast::Receiver<WireLine>,
-) -> Result<()> {
-    handle_client(stream, tracker, delta_rx).await
-}
-
+/// Serialize a value to an ndJSON line and broadcast it to all connected
+/// TCP clients. Returns the number of active receivers (0 if none connected).
 pub fn broadcast_line(tx: &broadcast::Sender<WireLine>, value: &impl serde::Serialize) -> usize {
     let json = serde_json::to_string(value).expect("delta serialization should not fail") + "\n";
     let json_len = json.len();

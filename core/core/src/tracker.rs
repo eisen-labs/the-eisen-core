@@ -17,7 +17,7 @@ fn now_ms() -> u64 {
 /// "in context" vs merely "visited", applies heat decay on each tick, and
 /// generates deltas that describe what changed.
 ///
-/// Concurrency: In Phase 1 this is wrapped in `Arc<Mutex<ContextTracker>>`.
+/// Concurrency: wrapped in `Arc<Mutex<ContextTracker>>` by the caller.
 /// All mutation goes through the public methods below. The caller is
 /// responsible for locking; this struct is not internally synchronized.
 pub struct ContextTracker {
@@ -29,13 +29,12 @@ pub struct ContextTracker {
     last_used_tokens: u32,
     context_size: u32,
     config: TrackerConfig,
-    /// Tracks which paths changed since the last tick so we can emit a
-    /// minimal delta. Populated by file_access / usage_update / end_turn,
-    /// drained by tick().
-    dirty: HashMap<String, ()>,
+    /// Paths that changed since the last tick. Populated by file_access /
+    /// usage_update / end_turn, drained by tick() to build a minimal delta.
+    changed_paths: HashSet<String>,
     /// Usage messages queued by usage_update(), drained by
     /// take_pending_usage(). This lets the tick loop broadcast them
-    /// without Dev A needing to handle the return value.
+    /// without the caller needing to handle the return value.
     pending_usage: Vec<UsageMessage>,
     pending_terminal_output_ids: HashSet<u64>,
 }
@@ -51,7 +50,7 @@ impl ContextTracker {
             last_used_tokens: 0,
             context_size: 0,
             config,
-            dirty: HashMap::new(),
+            changed_paths: HashSet::new(),
             pending_usage: Vec::new(),
             pending_terminal_output_ids: HashSet::new(),
         }
@@ -80,7 +79,7 @@ impl ContextTracker {
     }
 
     // -------------------------------------------------------------------
-    // Public API — called by Dev A's proxy/extract layer
+    // Public API — called by the proxy/extract layer
     // -------------------------------------------------------------------
 
     pub fn add_pending_terminal_output(&mut self, id: u64) {
@@ -115,7 +114,7 @@ impl ContextTracker {
         node.turn_accessed = self.current_turn;
         node.timestamp_ms = ts;
 
-        self.dirty.insert(path.to_string(), ());
+        self.changed_paths.insert(path.to_string());
     }
 
     /// Record a token usage update from the agent.
@@ -127,7 +126,7 @@ impl ContextTracker {
     ///
     /// The resulting `UsageMessage` is queued internally and drained by
     /// `take_pending_usage()` — typically called by the tick loop right
-    /// after `tick()`. This means Dev A can call `usage_update()` as
+    /// after `tick()`. Callers can treat `usage_update()` as
     /// fire-and-forget; the broadcast happens automatically.
     pub fn usage_update(&mut self, used: u32, size: u32) {
         let previous = self.last_used_tokens;
@@ -172,7 +171,7 @@ impl ContextTracker {
                 && self.current_turn.saturating_sub(node.turn_accessed) > self.config.context_turns
             {
                 node.in_context = false;
-                self.dirty.insert(path.clone(), ());
+                self.changed_paths.insert(path.clone());
             }
         }
     }
@@ -191,11 +190,11 @@ impl ContextTracker {
                 if node.heat <= 0.01 {
                     node.heat = 0.0;
                 }
-                self.dirty.insert(path.clone(), ());
+                self.changed_paths.insert(path.clone());
             }
         }
 
-        if self.dirty.is_empty() {
+        if self.changed_paths.is_empty() {
             return None;
         }
 
@@ -204,7 +203,7 @@ impl ContextTracker {
         let mut updates = Vec::new();
         let mut removed = Vec::new();
 
-        for path in self.dirty.drain().map(|(p, _)| p).collect::<Vec<_>>() {
+        for path in self.changed_paths.drain().collect::<Vec<_>>() {
             if let Some(node) = self.files.get(&path) {
                 // Only include nodes that are still warm or in-context
                 if node.heat > 0.0 || node.in_context {
@@ -269,7 +268,7 @@ impl ContextTracker {
         for (path, node) in &mut self.files {
             if node.in_context {
                 node.in_context = false;
-                self.dirty.insert(path.clone(), ());
+                self.changed_paths.insert(path.clone());
             }
         }
     }
@@ -464,7 +463,7 @@ mod tests {
         assert!(!t.files["/a.rs"].in_context);
 
         // First tick: drains dirty from file_access+end_turn AND applies
-        // decay (file is !in_context, heat=1.0 → 1.0*0.90 = 0.90)
+        // decay (file is !in_context, heat=1.0 > 1.0*0.90 = 0.90)
         let delta = t.tick();
         assert!(delta.is_some());
         let d = delta.unwrap();
@@ -482,7 +481,7 @@ mod tests {
         t.file_access("/a.rs", Action::Read);
         t.end_turn(); // exits context
 
-        // First tick: heat=1.0 * 0.001 = 0.001 < 0.01 → clamped to 0.
+        // First tick: heat=1.0 * 0.001 = 0.001 < 0.01 > clamped to 0.
         // File is removed (heat=0, !in_context).
         let delta = t.tick();
         assert!(delta.is_some());
@@ -526,7 +525,7 @@ mod tests {
     fn snapshot_includes_current_seq() {
         let mut t = default_tracker();
         t.file_access("/a.rs", Action::Read);
-        t.tick(); // seq → 1
+        t.tick(); // seq > 1
 
         let snap = t.snapshot();
         assert_eq!(snap.seq, 1);

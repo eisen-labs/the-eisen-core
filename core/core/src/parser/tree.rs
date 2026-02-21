@@ -36,7 +36,6 @@ impl SymbolTree {
         node_id
     }
 
-    #[allow(dead_code)]
     pub fn delete_node(&mut self, node_id: NodeId) -> anyhow::Result<()> {
         // Check if node is root BEFORE removing it
         if Some(node_id) == self.root {
@@ -48,7 +47,6 @@ impl SymbolTree {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub fn update_node(&mut self, node_id: NodeId, data: NodeData) -> anyhow::Result<()> {
         let node = self
             .arena
@@ -62,7 +60,6 @@ impl SymbolTree {
         self.arena.get(node_id).map(|n| n.get())
     }
 
-    #[allow(dead_code)]
     pub fn get_node_mut(&mut self, node_id: NodeId) -> Option<&mut NodeData> {
         self.arena.get_mut(node_id).map(|n| n.get_mut())
     }
@@ -71,12 +68,10 @@ impl SymbolTree {
         self.root
     }
 
-    #[allow(dead_code)]
     pub fn arena(&self) -> &Arena<NodeData> {
         &self.arena
     }
 
-    #[allow(dead_code)]
     pub fn find_by_path(&self, path: &str) -> Option<NodeId> {
         if let Some(root_id) = self.root {
             self.find_by_path_recursive(root_id, path)

@@ -45,7 +45,7 @@ impl TestServer {
                 let t2 = t.clone();
                 let rx = tx.subscribe();
                 tokio::spawn(async move {
-                    let _ = tcp::serve_client(stream, t2, rx).await;
+                    let _ = tcp::handle_client(stream, t2, rx).await;
                 });
             }
         });

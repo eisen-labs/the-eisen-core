@@ -25,7 +25,13 @@ impl Serialize for NodeKind {
     where
         S: serde::Serializer,
     {
-        let kind_str = match self {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl NodeKind {
+    pub fn as_str(&self) -> &str {
+        match self {
             NodeKind::Folder => "folder",
             NodeKind::File(_) => "file",
             NodeKind::Class => "class",
@@ -39,18 +45,13 @@ impl Serialize for NodeKind {
             NodeKind::Trait => "trait",
             NodeKind::Impl => "impl",
             NodeKind::Mod => "mod",
-        };
-        serializer.serialize_str(kind_str)
+        }
     }
-}
 
-impl NodeKind {
-    #[allow(dead_code)]
     pub fn is_file(&self) -> bool {
         matches!(self, NodeKind::File(_))
     }
 
-    #[allow(dead_code)]
     pub fn language(&self) -> Option<&str> {
         match self {
             NodeKind::File(ext) => Some(ext.as_str()),
