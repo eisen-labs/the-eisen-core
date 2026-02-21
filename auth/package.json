@@ -1,0 +1,30 @@
+{
+  "name": "eisen-auth",
+  "version": "0.1.0",
+  "module": "src/index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "bun --hot src/index.ts",
+    "start": "bun src/index.ts",
+    "migrate": "bun src/db/migrate.ts",
+    "seed": "bun src/db/seed.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@google-cloud/kms": "^5.4.0",
+    "@neondatabase/serverless": "^0.10",
+    "arctic": "^3.7.0",
+    "hono": "^4",
+    "jose": "^6",
+    "nanoid": "^5",
+    "stripe": "^20.3.1",
+    "zod": "^3"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}

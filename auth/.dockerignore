@@ -1,0 +1,14 @@
+node_modules
+.git
+.env
+.env.*
+!.env.example
+*.md
+.cache
+coverage
+dist
+out
+.idea
+.DS_Store
+*.tgz
+*.lcov
