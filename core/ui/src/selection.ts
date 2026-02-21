@@ -2,7 +2,11 @@ import { type Point, pointInPolygon } from "./region-geometry";
 
 export type SelectionMode = "marquee" | "lasso";
 
-type Graph = any;
+interface Graph {
+  screen2GraphCoords: (x: number, y: number) => { x: number; y: number };
+  graph2ScreenCoords: (x: number, y: number) => { x: number; y: number };
+  graphData: () => { nodes?: Array<{ id: string; x?: number; y?: number }> } | undefined;
+}
 
 const LASSO_FILL = "rgba(96, 165, 250, 0.04)";
 const LASSO_STROKE = "rgba(96, 165, 250, 0.35)";
@@ -36,7 +40,9 @@ export class Selection {
     s.width = s.height = "100%";
     s.pointerEvents = "none";
     container.appendChild(this.lassoCanvas);
-    this.lassoCtx = this.lassoCanvas.getContext("2d")!;
+    const ctx = this.lassoCanvas.getContext("2d");
+    if (!ctx) throw new Error("Failed to get 2d context");
+    this.lassoCtx = ctx;
 
     container.addEventListener("mousedown", this.onMouseDown, true);
     container.addEventListener("mouseup", this.onMouseUp, true);

@@ -671,7 +671,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       cwd,
       env: {
         ...process.env,
-        ...(params.env?.reduce((acc, e) => ({ ...acc, [e.name]: e.value }), {}) || {}),
+        ...Object.fromEntries(params.env?.map((e) => [e.name, e.value]) || []),
       },
       shell: useShell,
     });
@@ -1063,12 +1063,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     let modeRestored = false;
     let modelRestored = false;
 
-    if (savedModeId && availableModes.some((m: any) => m?.id === savedModeId)) {
+    if (savedModeId && availableModes.some((m: Record<string, unknown>) => m?.id === savedModeId)) {
       await inst.client.setMode(savedModeId);
       modeRestored = true;
     }
 
-    if (savedModelId && availableModels.some((m: any) => m?.modelId === savedModelId)) {
+    if (savedModelId && availableModels.some((m: Record<string, unknown>) => m?.modelId === savedModelId)) {
       await inst.client.setModel(savedModelId);
       modelRestored = true;
     }

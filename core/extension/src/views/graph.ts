@@ -1,8 +1,9 @@
 import { execFile } from "node:child_process";
+import * as crypto from "node:crypto";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { getCorePath } from "../bridge";
-import type { AgentInfo, MergedGraphDelta, MergedGraphSnapshot } from "../orchestrator";
+import type { AgentInfo, MergedGraphDelta, MergedGraphDeltaUpdate, MergedGraphSnapshot } from "../orchestrator";
 
 type UiNodeKind = "file" | "class" | "method" | "function";
 
@@ -35,7 +36,7 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
 
   private view?: vscode.WebviewView;
   private panel?: vscode.WebviewPanel;
-  private pendingMessages: Array<{ method: string; params: any }> = [];
+  private pendingMessages: Array<{ method: string; params: unknown }> = [];
   private baselineNodes: Record<string, UiNode> | null = null;
   private baselineCalls: Array<{ from: string; to: string }> = [];
   private baselineLoading: Promise<void> | null = null;
@@ -49,7 +50,7 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
   /** Throttle delta postMessage to avoid saturating the webview IPC channel.
    *  Deltas are batched and flushed at most every DELTA_FLUSH_MS. */
   private static readonly DELTA_FLUSH_MS = 200; // ~5 Hz max
-  private pendingDeltaUpdates: any[] = [];
+  private pendingDeltaUpdates: MergedGraphDeltaUpdate[] = [];
   private pendingDeltaSeq = 0;
   private deltaFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -147,7 +148,7 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
     if (this.pendingDeltaUpdates.length === 0) return;
 
     // Deduplicate: keep only the latest update per node id
-    const latestById = new Map<string, any>();
+    const latestById = new Map<string, MergedGraphDeltaUpdate>();
     for (const update of this.pendingDeltaUpdates) {
       latestById.set(update.id, update);
     }
@@ -244,7 +245,7 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
     return !!this.view || !!this.panel;
   }
 
-  private sendToTargets(msg: { method: string; params: any }): void {
+  private sendToTargets(msg: { method: string; params: unknown }): void {
     this.view?.webview.postMessage(msg);
     this.panel?.webview.postMessage(msg);
   }
@@ -331,7 +332,7 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
 
     if (!stdout) return null;
 
-    let parsed: any;
+    let parsed: { nodes?: Record<string, Record<string, unknown>>; calls?: Array<{ from?: string; to?: string }> };
     try {
       parsed = JSON.parse(stdout);
     } catch {
@@ -339,22 +340,23 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
     }
 
     const nodes: Record<string, UiNode> = {};
-    const inputNodes = parsed?.nodes as Record<string, any> | undefined;
+    const inputNodes = parsed?.nodes;
     if (!inputNodes) return null;
 
     for (const [rawId, rawNode] of Object.entries(inputNodes)) {
       const id = this.normalizeNodeId(rawId);
       if (!id || this.shouldIgnorePath(id)) continue;
+      const lines = rawNode.lines as { start?: unknown; end?: unknown } | undefined;
       nodes[id] = {
-        kind: typeof rawNode?.kind === "string" ? (rawNode.kind as UiNodeKind) : undefined,
+        kind: typeof rawNode.kind === "string" ? (rawNode.kind as UiNodeKind) : undefined,
         lines:
-          rawNode?.lines && typeof rawNode.lines === "object"
+          lines && typeof lines === "object"
             ? {
-                start: Number(rawNode.lines.start) || 0,
-                end: Number(rawNode.lines.end) || 0,
+                start: Number(lines.start) || 0,
+                end: Number(lines.end) || 0,
               }
             : undefined,
-        tokens: typeof rawNode?.tokens === "number" ? rawNode.tokens : undefined,
+        tokens: typeof rawNode.tokens === "number" ? rawNode.tokens : undefined,
       };
     }
 
@@ -402,7 +404,7 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
   // -----------------------------------------------------------------------
 
   /** Post a message to the webview, or queue it if the view isn't resolved yet. */
-  private postToWebview(msg: { method: string; params: any }): void {
+  private postToWebview(msg: { method: string; params: unknown }): void {
     if (this.hasWebviewTarget()) {
       this.sendToTargets(msg);
     } else {
@@ -559,19 +561,32 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
   private getHtml(webview: vscode.Webview): string {
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "media", "graph.js"));
     const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "media", "graph.css"));
+    const nonce = crypto.randomBytes(16).toString("base64");
 
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'unsafe-eval' ${webview.cspSource}; img-src ${webview.cspSource} blob: data:;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'unsafe-eval' 'nonce-${nonce}' ${webview.cspSource}; img-src ${webview.cspSource} blob: data:;">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="${styleUri}">
+  <style nonce="${nonce}">*:focus,*:focus-visible{outline:none!important;outline-offset:0!important;box-shadow:none!important;}</style>
   <title>Eisen</title>
 </head>
 <body>
   <div id="graph"></div>
-  <script src="${scriptUri}"></script>
+  <script nonce="${nonce}">
+    (function() {
+      var vscode = acquireVsCodeApi();
+      window.__eisenTransport = {
+        send: function(msg) { vscode.postMessage(msg); },
+        listen: function(handler) {
+          window.addEventListener("message", function(e) { handler(e.data); });
+        }
+      };
+    })();
+  </script>
+  <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
   }

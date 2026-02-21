@@ -3,7 +3,6 @@ import { Inspect, type NodeMeta } from "./components/inspect";
 import { Toolbar } from "./components/toolbar";
 import { TopBar } from "./components/top-bar";
 import { el } from "./dom";
-import { ICON } from "./panels/icons";
 import { Renderer } from "./render";
 import { Selection, type SelectionMode } from "./selection";
 import {
@@ -16,18 +15,13 @@ import {
   type Snapshot,
   type State,
 } from "./state";
+import type { Transport } from "./transport";
 import type { AvailableAgent, AvailableCommand, FileSearchResult, SessionMeta } from "./types";
-
-declare const acquireVsCodeApi: () => {
-  postMessage: (msg: unknown) => void;
-  getState: () => unknown;
-  setState: (state: unknown) => void;
-};
 
 class Eisen {
   private state: State;
   private renderer: Renderer;
-  private vscode: ReturnType<typeof acquireVsCodeApi> | null = null;
+  private transport: Transport;
   private selectedId: string | null = null;
   private selectedIds = new Set<string>();
 
@@ -41,41 +35,23 @@ class Eisen {
   private right: HTMLElement;
   private leftWidth = 340;
   private rightWidth = 280;
-  private panelsOpen = true;
 
-  constructor() {
+  constructor(transport: Transport) {
     document.documentElement.setAttribute("data-theme", "dark");
     this.state = createState();
+    this.transport = transport;
 
     const canvas = document.getElementById("graph") as HTMLElement;
 
     this.root = document.body;
-    this.root.style.cssText = "display:grid; width:100%; height:100%;";
-    this.updateGrid();
 
-    const header = el("div", { className: "header-bar", style: { gridColumn: "1 / -1" } });
+    const header = el("div", { className: "header-bar" });
 
     // Left panel (chat)
     this.left = el("div", { className: "panel panel-left" });
     const leftHandle = el("div", { className: "resize-handle resize-left" });
     leftHandle.addEventListener("mousedown", (e) => this.startResize(e, "left"));
     this.left.append(leftHandle);
-
-    // Chevron toggle
-    const chevron = el("button", {
-      type: "button",
-      className: "chevron-toggle",
-      innerHTML: ICON.chevronLeft,
-      "aria-label": "Toggle panels",
-    });
-    chevron.addEventListener("click", () => {
-      this.panelsOpen = !this.panelsOpen;
-      this.left.style.display = this.panelsOpen ? "" : "none";
-      this.right.style.display = this.panelsOpen ? "" : "none";
-      chevron.innerHTML = this.panelsOpen ? ICON.chevronLeft : ICON.chevronRight;
-      this.updateGrid();
-    });
-    canvas.append(chevron);
 
     // Right panel (inspect)
     this.right = el("div", { className: "panel panel-right" });
@@ -87,10 +63,9 @@ class Eisen {
     this.topBar = new TopBar({
       onSelect: (id) => {
         this.chat.selectAgent(id);
-        this.vscode?.postMessage({ type: "switchAgent", instanceId: id });
+        this.transport.send({ type: "switchAgent", instanceId: id });
       },
       onAdd: () => {
-        this.topBar.showPending("New chat");
         this.chat.showAgentPicker();
       },
     });
@@ -98,7 +73,7 @@ class Eisen {
     this.chat = new Chat({
       onSend: (text, instanceId, chips) => {
         if (text) this.chat.addMessage({ from: "user", text, instanceId: instanceId ?? undefined });
-        this.vscode?.postMessage({
+        this.transport.send({
           type: "chatMessage",
           text,
           instanceId,
@@ -113,16 +88,16 @@ class Eisen {
         });
       },
       onAddAgent: (agentType) => {
-        this.vscode?.postMessage({ type: "addAgent", agentType });
+        this.transport.send({ type: "addAgent", agentType });
       },
       onModeChange: (modeId) => {
-        this.vscode?.postMessage({ type: "selectMode", modeId });
+        this.transport.send({ type: "selectMode", modeId });
       },
       onModelChange: (modelId) => {
-        this.vscode?.postMessage({ type: "selectModel", modelId });
+        this.transport.send({ type: "selectModel", modelId });
       },
       onFileSearch: (query) => {
-        this.vscode?.postMessage({ type: "fileSearch", query });
+        this.transport.send({ type: "fileSearch", query });
       },
     });
 
@@ -149,24 +124,15 @@ class Eisen {
       },
     });
 
-    // Assemble layout around existing #graph div
     header.append(this.topBar.el);
     this.left.append(this.chat.el);
-    this.chat.el.style.height = "100%";
     this.right.append(this.inspect.el);
-
-    this.left.style.gridColumn = "1";
-    canvas.style.gridColumn = "2";
-    this.right.style.gridColumn = "3";
 
     const toolbarWrap = el("div", { className: "toolbar-anchor" });
     toolbarWrap.append(toolbar.el);
 
-    // Insert header before canvas, then left before canvas, right after canvas
-    this.root.insertBefore(header, canvas);
-    this.root.insertBefore(this.left, canvas);
-    canvas.after(this.right);
-    this.root.append(toolbarWrap);
+    this.root.append(header, canvas, this.left, this.right, toolbarWrap);
+    this.updateLayout();
 
     // Renderer + selection
     this.renderer = new Renderer(canvas, {
@@ -179,16 +145,15 @@ class Eisen {
       this.applySelection(ids);
     });
 
-    this.initVscode();
+    this.transport.send({ type: "requestSnapshot" });
+    this.transport.listen((msg) => this.handleMessage(msg));
     this.bindEvents();
     this.bindKeyboard();
   }
 
-  private updateGrid(): void {
-    this.root.style.gridTemplateRows = "auto 1fr";
-    const l = this.panelsOpen ? `${this.leftWidth}px` : "0px";
-    const r = this.panelsOpen ? `${this.rightWidth}px` : "0px";
-    this.root.style.gridTemplateColumns = `${l} 1fr ${r}`;
+  private updateLayout(): void {
+    this.left.style.width = `${this.leftWidth}px`;
+    this.right.style.width = `${this.rightWidth}px`;
   }
 
   private startResize(e: MouseEvent, side: "left" | "right"): void {
@@ -205,7 +170,8 @@ class Eisen {
         const d = ev.clientX - startX;
         if (side === "left") this.leftWidth = Math.max(240, Math.min(600, startW + d));
         else this.rightWidth = Math.max(200, Math.min(600, startW - d));
-        this.updateGrid();
+        this.updateLayout();
+        this.chat.repositionDropdowns();
       });
     };
     const up = () => {
@@ -219,18 +185,7 @@ class Eisen {
     document.addEventListener("mouseup", up);
   }
 
-  private initVscode(): void {
-    try {
-      this.vscode = acquireVsCodeApi();
-      this.vscode.postMessage({ type: "requestSnapshot" });
-    } catch {
-      this.loadMockData();
-    }
-  }
-
   private bindEvents(): void {
-    window.addEventListener("message", (e) => this.handleMessage(e.data));
-
     window.addEventListener("eisen:selectNode", ((e: CustomEvent<{ id: string | null; metaKey: boolean }>) => {
       const { id, metaKey } = e.detail;
       this.selection.handleClick(id ?? undefined, this.renderer.getDepsMode() ? false : metaKey);
@@ -375,11 +330,6 @@ class Eisen {
     this.rerender();
   }
 
-  private loadMockData(): void {
-    applySnapshot(this.state, { seq: 0, nodes: {}, calls: [] });
-    this.rerender();
-  }
-
   destroy(): void {
     this.chat.destroy();
     this.selection.destroy();
@@ -387,4 +337,15 @@ class Eisen {
   }
 }
 
-new Eisen();
+const transport = ((globalThis as Record<string, unknown>).__eisenTransport as Transport) ?? null;
+if (transport) {
+  new Eisen(transport);
+} else {
+  document.documentElement.setAttribute("data-theme", "dark");
+  document.body.innerHTML =
+    '<div style="display:flex;align-items:center;justify-content:center;height:100%;background:var(--bg-primary,#0a0a0a)">' +
+    '<svg width="153" height="90" viewBox="0 0 306 180" fill="none" xmlns="http://www.w3.org/2000/svg">' +
+    '<path d="M153 111.737L59.5283 180L95.5 69.5L112.206 81.6987L97.4355 127.55L136.088 99.3217L153 111.737Z" fill="white"/>' +
+    '<path d="M306 0.0322266L211.064 70.083L246.472 180L0 0L306 0.0322266ZM208.564 127.55L187.619 62.5273L245.219 20.0254L61.3057 20.0059L208.564 127.55Z" fill="white"/>' +
+    "</svg></div>";
+}

@@ -120,7 +120,7 @@ export function getNodeDisplayInfo(id: string, kind?: NodeKind): { label: string
   const depth = id.includes("::") ? id.split("::").length - 1 : 0;
   const k = depth >= 2 ? "method" : (kind ?? deriveKind(id));
   let label: string;
-  if (id.includes("::")) label = id.split("::").pop()!;
+  if (id.includes("::")) label = id.split("::").pop() ?? "";
   else if (!id) label = "/";
   else label = id.split("/").filter(Boolean).pop() || "/";
   if (k === "folder" && id !== "") label += "/";

@@ -21,7 +21,7 @@ export class Toolbar {
   el: HTMLElement;
 
   constructor(cb: ToolbarCb) {
-    this.el = el("div", { className: "toolbar" });
+    this.el = el("div", { className: "toolbar glass" });
     for (const b of BUTTONS) {
       const btn = el("button", {
         type: "button",

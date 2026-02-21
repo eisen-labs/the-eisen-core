@@ -1,6 +1,6 @@
 // @ts-expect-error no type declarations
 import { forceCollide, forceLink, forceManyBody } from "d3-force-3d";
-import ForceGraph from "force-graph";
+import ForceGraph, { type ForceGraphGeneric } from "force-graph";
 import { drawRegionLabel as paintRegionLabel } from "./region-draw";
 import { convexHull, expandPolygon, type Point, pointInPolygon, polygonArea, resamplePolygon } from "./region-geometry";
 import {
@@ -73,7 +73,13 @@ interface RegionLabelDraw {
   label: string;
 }
 
-type Graph = any;
+interface ResolvedLink {
+  source: SimNode;
+  target: SimNode;
+  type?: "structure" | "call";
+}
+
+type Graph = ForceGraphGeneric<Graph, GraphNode, GraphLink>;
 
 const REGION_MASS: Record<NodeKind, number> = {
   folder: 1.5,
@@ -237,7 +243,7 @@ export class Renderer {
     return 1;
   }
 
-  private linkAlpha(link: any): number {
+  private linkAlpha(link: GraphLink): number {
     const sourceId = this.linkEndpointId(link.source);
     const targetId = this.linkEndpointId(link.target);
     if (this.viewMode === 1) {
@@ -253,7 +259,7 @@ export class Renderer {
     return 1;
   }
 
-  private isLinkVisible(link: any): boolean {
+  private isLinkVisible(link: GraphLink): boolean {
     if (this.viewMode !== 0) return true;
     const sourceId = this.linkEndpointId(link.source);
     const targetId = this.linkEndpointId(link.target);
@@ -288,14 +294,14 @@ export class Renderer {
     return color;
   }
 
-  private getLinkColor(link: any): string {
+  private getLinkColor(link: GraphLink): string {
     if (!this.isLinkVisible(link)) return "rgba(0,0,0,0)";
     const alpha = this.linkAlpha(link);
     if (link.type === "call") return this.colorWithAlpha(palette.link.callColor, alpha);
     return this.colorWithAlpha(palette.link.color, alpha);
   }
 
-  private getLinkWidth(link: any): number {
+  private getLinkWidth(link: GraphLink): number {
     if (!this.isLinkVisible(link)) return 0;
     if (link.type === "call") return palette.link.callWidth;
     return palette.link.width;
@@ -356,20 +362,20 @@ export class Renderer {
   }
 
   private createGraph(container: HTMLElement): Graph {
-    return (ForceGraph as any)()(container)
+    return (ForceGraph as unknown as (el: HTMLElement) => Graph)(container)
       .autoPauseRedraw(false)
       .backgroundColor(palette.background)
       .maxZoom(2)
       .nodeId("id")
       .nodeLabel("")
-      .nodeVal((n: any) => nodeVal(n.kind))
-      .linkColor((l: any) => this.getLinkColor(l))
-      .linkWidth((l: any) => this.getLinkWidth(l))
+      .nodeVal((n: GraphNode) => nodeVal(n.kind))
+      .linkColor((l: GraphLink) => this.getLinkColor(l))
+      .linkWidth((l: GraphLink) => this.getLinkWidth(l))
       .cooldownTicks(palette.force.cooldownTicks)
       .d3Force(
         "link",
         forceLink()
-          .distance((l: any) => {
+          .distance((l: ResolvedLink) => {
             if (l.type === "call") return 0;
             const sourceKind = l.source?.kind as NodeKind | undefined;
             const targetKind = l.target?.kind as NodeKind | undefined;
@@ -384,7 +390,7 @@ export class Renderer {
             }
             return base;
           })
-          .strength((l: any) => {
+          .strength((l: ResolvedLink) => {
             if (l.type === "call") return 0;
             if (this.viewMode === 0) {
               return Math.min(1.2, palette.force.linkStrength * Renderer.ACTIVE_LINK_STRENGTH_FACTOR);
@@ -396,7 +402,7 @@ export class Renderer {
       .d3Force(
         "charge",
         forceManyBody()
-          .strength((n: any) => {
+          .strength((n: GraphNode) => {
             const base =
               n.kind !== "folder"
                 ? palette.force.charge
@@ -417,7 +423,7 @@ export class Renderer {
       .d3Force(
         "collide",
         forceCollide()
-          .radius((n: any) =>
+          .radius((n: GraphNode) =>
             Math.max(
               1,
               (nodeRadius(n.kind) +
@@ -431,11 +437,13 @@ export class Renderer {
       )
       .d3Force("region-repel", this.createRegionRepelForce())
       .d3VelocityDecay(palette.force.velocityDecay)
-      .nodeCanvasObject((node: any, ctx: CanvasRenderingContext2D, scale: number) => this.drawNode(node, ctx, scale))
-      .nodePointerAreaPaint((node: any, color: string, ctx: CanvasRenderingContext2D) =>
+      .nodeCanvasObject((node: GraphNode, ctx: CanvasRenderingContext2D, scale: number) =>
+        this.drawNode(node, ctx, scale),
+      )
+      .nodePointerAreaPaint((node: GraphNode, color: string, ctx: CanvasRenderingContext2D) =>
         this.drawHitArea(node, color, ctx),
       )
-      .onNodeHover((node: any) => {
+      .onNodeHover((node: GraphNode | null) => {
         if (node && node.x != null && node.y != null) {
           const screen = this.graph.graph2ScreenCoords(node.x, node.y);
           this.onHoverCallback?.(node.id, screen.x, screen.y);
@@ -443,7 +451,7 @@ export class Renderer {
           this.onHoverCallback?.(null);
         }
       })
-      .onNodeClick((node: any, event: MouseEvent) =>
+      .onNodeClick((node: GraphNode, event: MouseEvent) =>
         window.dispatchEvent(new CustomEvent("eisen:selectNode", { detail: { id: node.id, metaKey: event.metaKey } })),
       )
       .onBackgroundClick((event: MouseEvent) =>
@@ -526,8 +534,8 @@ export class Renderer {
       let totalWeight = 0;
       for (const n of members) {
         const w = REGION_MASS[n.kind];
-        cx += n.x! * w;
-        cy += n.y! * w;
+        cx += (n.x as number) * w;
+        cy += (n.y as number) * w;
         totalWeight += w;
       }
       if (totalWeight <= 0) continue;
@@ -536,7 +544,7 @@ export class Renderer {
 
       let radius = 0;
       for (const n of members) {
-        const d = Math.hypot(n.x! - cx, n.y! - cy) + nodeRadius(n.kind);
+        const d = Math.hypot((n.x as number) - cx, (n.y as number) - cy) + nodeRadius(n.kind);
         if (d > radius) radius = d;
       }
 
@@ -716,19 +724,22 @@ export class Renderer {
   }
 
   private projectRegionPoint(node: GraphNode): Point {
+    const nx = node.x as number;
+    const ny = node.y as number;
+
     if (node.kind === "folder" || node.kind === "file") {
-      return { x: node.x!, y: node.y! };
+      return { x: nx, y: ny };
     }
 
     const parent = this.nodeMap.get(deriveParent(node.id));
     if (parent?.x == null || parent?.y == null) {
-      return { x: node.x!, y: node.y! };
+      return { x: nx, y: ny };
     }
 
     const t = 0.38;
     return {
-      x: node.x! + (parent.x - node.x!) * t,
-      y: node.y! + (parent.y - node.y!) * t,
+      x: nx + (parent.x - nx) * t,
+      y: ny + (parent.y - ny) * t,
     };
   }
 
@@ -843,11 +854,12 @@ export class Renderer {
   }
 
   private drawNode(node: GraphNode, ctx: CanvasRenderingContext2D, scale: number): void {
-    const { id, kind, name, inContext } = node;
+    const { id, kind, name: _name, inContext } = node;
     if (!this.isNodeVisible(id)) return;
+    if (node.x == null || node.y == null) return;
 
-    const x = node.x!;
-    const y = node.y!;
+    const x = node.x;
+    const y = node.y;
     const r = nodeRadius(kind);
     const isSelected = this.selectedIds.has(id);
     const isCaller = this.callerIds.has(id);
@@ -899,9 +911,10 @@ export class Renderer {
 
   private drawHitArea(node: GraphNode, color: string, ctx: CanvasRenderingContext2D): void {
     if (!this.isNodeVisible(node.id)) return;
+    if (node.x == null || node.y == null) return;
     const r = nodeRadius(node.kind);
     ctx.beginPath();
-    ctx.arc(node.x!, node.y!, r, 0, 2 * Math.PI);
+    ctx.arc(node.x, node.y, r, 0, 2 * Math.PI);
     ctx.fillStyle = color;
     ctx.fill();
   }

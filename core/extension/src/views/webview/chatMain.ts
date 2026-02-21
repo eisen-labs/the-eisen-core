@@ -169,14 +169,15 @@ const ANSI_BG: Record<number, string> = {
   107: "ansi-bg-bright-white",
 };
 const ANSI_STYLE: Record<number, string> = { 1: "ansi-bold", 2: "ansi-dim", 3: "ansi-italic", 4: "ansi-underline" };
-const ANSI_RE = /\x1b\[([0-9;]*)m/g;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequence matching
+const ANSI_RE = /\u001b\[([0-9;]*)m/g;
 
 export function ansiToHtml(text: string): string {
   let result = "",
     lastIndex = 0,
     classes: string[] = [];
-  let match: RegExpExecArray | null;
-  while ((match = ANSI_RE.exec(text)) !== null) {
+  let match: RegExpExecArray | null = ANSI_RE.exec(text);
+  while (match !== null) {
     if (match.index > lastIndex) {
       const t = escapeHtml(text.slice(lastIndex, match.index));
       result += classes.length > 0 ? `<span class="${classes.join(" ")}">${t}</span>` : t;
@@ -202,6 +203,7 @@ export function ansiToHtml(text: string): string {
       }
     }
     lastIndex = match.index + match[0].length;
+    match = ANSI_RE.exec(text);
   }
   ANSI_RE.lastIndex = 0;
   if (lastIndex < text.length) {
@@ -212,7 +214,8 @@ export function ansiToHtml(text: string): string {
 }
 
 export function hasAnsiCodes(text: string): boolean {
-  return /\x1b\[[0-9;]*m/.test(text);
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequence matching
+  return /\u001b\[[0-9;]*m/.test(text);
 }
 
 export function computeLineDiff(
@@ -337,27 +340,27 @@ interface Elements {
 
 function getElements(doc: Document): Elements {
   return {
-    messagesEl: doc.getElementById("messages")!,
+    messagesEl: doc.getElementById("messages") as HTMLElement,
     inputEl: doc.getElementById("input") as HTMLTextAreaElement,
     sendBtn: doc.getElementById("send") as HTMLButtonElement,
     stopBtn: doc.getElementById("stop") as HTMLButtonElement,
-    statusDot: doc.getElementById("status-dot")!,
-    statusText: doc.getElementById("status-text")!,
+    statusDot: doc.getElementById("status-dot") as HTMLElement,
+    statusText: doc.getElementById("status-text") as HTMLElement,
     connectBtn: doc.getElementById("connect-btn") as HTMLButtonElement,
     agentSelector: doc.getElementById("agent-selector") as HTMLSelectElement,
     addAgentBtn: doc.getElementById("add-agent-btn") as HTMLButtonElement,
     modeSelector: doc.getElementById("mode-selector") as HTMLSelectElement,
     modelSelector: doc.getElementById("model-selector") as HTMLSelectElement,
-    welcomeView: doc.getElementById("welcome-view")!,
-    commandAutocomplete: doc.getElementById("command-autocomplete")!,
-    filePicker: doc.getElementById("file-picker")!,
-    chipStack: doc.getElementById("chip-stack")!,
-    planContainer: doc.getElementById("agent-plan-container")!,
-    usageMeterEl: doc.getElementById("usage-meter")!,
-    instanceTabsEl: doc.getElementById("instance-tabs")!,
-    emptyState: doc.getElementById("empty-state")!,
-    tabSidebar: doc.getElementById("tab-sidebar")!,
-    chatMain: doc.getElementById("chat-main")!,
+    welcomeView: doc.getElementById("welcome-view") as HTMLElement,
+    commandAutocomplete: doc.getElementById("command-autocomplete") as HTMLElement,
+    filePicker: doc.getElementById("file-picker") as HTMLElement,
+    chipStack: doc.getElementById("chip-stack") as HTMLElement,
+    planContainer: doc.getElementById("agent-plan-container") as HTMLElement,
+    usageMeterEl: doc.getElementById("usage-meter") as HTMLElement,
+    instanceTabsEl: doc.getElementById("instance-tabs") as HTMLElement,
+    emptyState: doc.getElementById("empty-state") as HTMLElement,
+    tabSidebar: doc.getElementById("tab-sidebar") as HTMLElement,
+    chatMain: doc.getElementById("chat-main") as HTMLElement,
   };
 }
 

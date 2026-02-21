@@ -23,7 +23,8 @@ export class Chat {
   private dropdowns: Record<string, HTMLElement>;
   private cb: ChatCb;
   private chatView: HTMLElement;
-  private pickerView: HTMLElement;
+  private inputRow!: HTMLElement;
+  private settingsBtn!: HTMLElement;
 
   private activeId: string | null = null;
   private msgMap = new Map<string, { from: string; text: string }[]>();
@@ -63,20 +64,24 @@ export class Chat {
     });
     sendBtn.addEventListener("click", () => this.doSend());
 
-    const settingsBtn = el("button", {
+    this.settingsBtn = el("button", {
       type: "button",
       className: "settings-btn",
       innerHTML: ICON.settings,
       "aria-label": "Settings",
     });
-    settingsBtn.addEventListener("click", () => this.toggle("settings"));
+    this.settingsBtn.addEventListener("click", () => this.toggle("settings"));
 
     this.dropdowns = {
-      cmd: el("div", { className: "dropdown dropdown-cmd" }),
-      file: el("div", { className: "dropdown dropdown-file" }),
-      settings: el("div", { className: "dropdown-settings" }),
+      cmd: el("div", { className: "portal-dropdown" }),
+      file: el("div", { className: "portal-dropdown" }),
+      settings: el("div", { className: "portal-dropdown" }),
+      agents: el("div", { className: "portal-dropdown" }),
     };
-    for (const d of Object.values(this.dropdowns)) d.style.display = "none";
+    for (const d of Object.values(this.dropdowns)) {
+      d.style.display = "none";
+      document.body.append(d);
+    }
 
     this.dropdowns.cmd.addEventListener("mousedown", (e) => e.preventDefault());
     this.dropdowns.cmd.addEventListener("click", (e) => {
@@ -100,23 +105,20 @@ export class Chat {
       }
     });
 
-    const inputRow = el("div", { className: "input-row" });
-    inputRow.append(this.dropdowns.cmd, this.dropdowns.file, this.input, sendBtn);
+    this.inputRow = el("div", { className: "input-row glass" });
+    this.inputRow.append(this.settingsBtn, this.input, sendBtn);
 
     this.chatView = el("div", { className: "chat-view" });
-    this.chatView.append(
-      this.messages,
-      this.chipBar,
-      inputRow,
-      el("div", { className: "settings-wrap" }, settingsBtn),
-      this.dropdowns.settings,
-    );
-
-    this.pickerView = el("div", { className: "picker-view" });
-    this.pickerView.style.display = "none";
+    this.chatView.append(this.messages, this.chipBar, this.inputRow);
 
     this.el = el("div", { className: "chat-root" });
-    this.el.append(this.chatView, this.pickerView);
+    this.el.append(this.chatView);
+  }
+
+  repositionDropdowns(): void {
+    if (this.open && this.dropdowns[this.open].style.display !== "none") {
+      this.positionDropdown(this.open, this.inputRow, true);
+    }
   }
 
   destroy(): void {
@@ -124,13 +126,27 @@ export class Chat {
       clearTimeout(this.fileTimer);
       this.fileTimer = null;
     }
+    for (const d of Object.values(this.dropdowns)) d.remove();
+  }
+
+  private positionDropdown(key: string, anchor: HTMLElement, above: boolean): void {
+    const d = this.dropdowns[key];
+    const r = anchor.getBoundingClientRect();
+    const gap = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--space-md")) || 6;
+    d.style.left = `${r.left}px`;
+    d.style.width = `${r.width}px`;
+    if (above) {
+      d.style.bottom = `${window.innerHeight - r.top + gap}px`;
+      d.style.top = "";
+    } else {
+      d.style.top = `${r.bottom + gap}px`;
+      d.style.bottom = "";
+    }
   }
 
   selectAgent(id: string): void {
     this.activeId = id;
     this.close();
-    this.chatView.style.display = "";
-    this.pickerView.style.display = "none";
     this.renderMessages();
   }
 
@@ -142,17 +158,24 @@ export class Chat {
   }
 
   showAgentPicker(): void {
-    this.chatView.style.display = "none";
-    this.pickerView.style.display = "";
-    this.pickerView.innerHTML = "";
-    const spacer = el("div", { className: "flex-spacer" });
-    const list = el("div", { className: "picker-list" });
+    if (this.open === "agents") {
+      this.close();
+      return;
+    }
+    this.close();
+    this.open = "agents";
+    const p = this.dropdowns.agents;
+    p.innerHTML = "";
     for (const a of this.agents) {
       const btn = el("div", { className: OPT }, a.name);
-      btn.addEventListener("click", () => this.cb.onAddAgent(a.id));
-      list.append(btn);
+      btn.addEventListener("click", () => {
+        this.close();
+        this.cb.onAddAgent(a.id);
+      });
+      p.append(btn);
     }
-    this.pickerView.append(spacer, list);
+    p.style.display = "flex";
+    this.positionDropdown("agents", this.inputRow, true);
   }
 
   setMeta(meta: SessionMeta, id?: string): void {
@@ -276,7 +299,8 @@ export class Chat {
         },
       })),
     );
-    p.style.display = "block";
+    p.style.display = "flex";
+    this.positionDropdown("settings", this.inputRow, true);
   }
 
   private doSend(): void {
@@ -398,7 +422,8 @@ export class Chat {
         return `<div class="${cls}" data-i="${i}"><span class="cmd-name">/${escapeHtml(cmd.name)}</span>${desc}</div>`;
       })
       .join("");
-    p.style.display = "block";
+    p.style.display = "flex";
+    this.positionDropdown("cmd", this.inputRow, true);
     p.querySelector(".active")?.scrollIntoView({ block: "nearest" });
   }
 
@@ -434,7 +459,8 @@ export class Chat {
     const p = this.dropdowns.file;
     if (!this.files.length) {
       p.innerHTML = '<div class="file-empty">No files found</div>';
-      p.style.display = "block";
+      p.style.display = "flex";
+      this.positionDropdown("file", this.inputRow, true);
       return;
     }
     p.innerHTML = this.files
@@ -444,7 +470,8 @@ export class Chat {
         return `<div class="${cls}" data-i="${i}"><span class="file-name">${escapeHtml(name)}</span><span class="file-path">${escapeHtml(r.relativePath)}</span></div>`;
       })
       .join("");
-    p.style.display = "block";
+    p.style.display = "flex";
+    this.positionDropdown("file", this.inputRow, true);
     p.querySelector(".active")?.scrollIntoView({ block: "nearest" });
   }
 
