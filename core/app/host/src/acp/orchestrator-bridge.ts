@@ -130,12 +130,12 @@ export class OrchestratorBridge {
     this._process.stderr?.on("data", (data: Buffer) => {
       const text = data.toString("utf-8").trim();
       if (text) {
-        console.log(`[OrchestratorBridge stderr] ${text}`);
+        console.error(`[OrchestratorBridge stderr] ${text}`);
       }
     });
 
     this._process.on("exit", (code) => {
-      console.log(`[OrchestratorBridge] Process exited with code ${code}`);
+      console.error(`[OrchestratorBridge] Process exited with code ${code}`);
       this._process = null;
     });
 
@@ -228,7 +228,7 @@ export class OrchestratorBridge {
     // Handle agent_tcp messages — connect to EisenOrchestrator for graph
     if (msg.type === "agent_tcp") {
       const tcpMsg = msg as AgentTcpMessage;
-      console.log(
+      console.error(
         `[OrchestratorBridge] Agent TCP: ${tcpMsg.agent_id} on port ${tcpMsg.tcp_port} (${tcpMsg.agent_type})`,
       );
       if (this._eisenOrchestrator) {

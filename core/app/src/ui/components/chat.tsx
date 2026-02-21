@@ -28,6 +28,7 @@ export class Chat {
   private cb: ChatCb;
   private chatView: HTMLElement;
   private pickerView: HTMLElement;
+  private emptyView: HTMLElement;
 
   private activeId: string | null = null;
   private msgMap = new Map<string, { from: string; text: string }[]>();
@@ -115,16 +116,33 @@ export class Chat {
 
     this.pickerView = (<div className="flex flex-col h-full" style={{ display: "none" }} />) as HTMLElement;
 
+    this.emptyView = (
+      <div className="flex flex-col items-center justify-center h-full text-center px-lg">
+        <div className="text-muted text-sm">Select an agent to start working</div>
+      </div>
+    ) as HTMLElement;
+
+    this.chatView.style.display = "none";
+
     this.el = (<div className="flex flex-col h-full" />) as HTMLElement;
-    this.el.append(this.chatView, this.pickerView);
+    this.el.append(this.emptyView, this.chatView, this.pickerView);
   }
 
   selectAgent(id: string): void {
     this.activeId = id;
     this.close();
+    this.emptyView.style.display = "none";
     this.chatView.style.display = "";
     this.pickerView.style.display = "none";
     this.renderMessages();
+  }
+
+  clearAgent(): void {
+    this.activeId = null;
+    this.close();
+    this.emptyView.style.display = "";
+    this.chatView.style.display = "none";
+    this.pickerView.style.display = "none";
   }
 
   setAgents(a: AvailableAgent[]): void {
@@ -135,6 +153,7 @@ export class Chat {
   }
 
   showAgentPicker(): void {
+    this.emptyView.style.display = "none";
     this.chatView.style.display = "none";
     this.pickerView.style.display = "";
     this.pickerView.innerHTML = "";

@@ -58,7 +58,7 @@ export function getAgent(id: string): AgentConfig | undefined {
 
 export function getDefaultAgent(): AgentConfig {
   const agent = getFirstAvailableAgent();
-  console.log(`[Eisen] Default agent selected: ${agent.name} (${agent.command})`);
+  console.error(`[Eisen] Default agent selected: ${agent.name} (${agent.command})`);
   return agent;
 }
 
@@ -67,12 +67,12 @@ function isCommandAvailableAsync(command: string): Promise<boolean> {
     const whichCmd = process.platform === "win32" ? "where.exe" : "which";
     execFile(whichCmd, [command], { encoding: "utf8", timeout: 5000 }, (error, stdout) => {
       if (error) {
-        console.log(`[Eisen] Command "${command}" not available:`, error.message);
+        console.error(`[Eisen] Command "${command}" not available:`, error.message);
         resolve(false);
         return;
       }
       const isAvailable = stdout.trim().length > 0;
-      console.log(`[Eisen] Command "${command}" available:`, isAvailable, stdout.trim().split("\n")[0]);
+      console.error(`[Eisen] Command "${command}" available:`, isAvailable, stdout.trim().split("\n")[0]);
       resolve(isAvailable);
     });
   });
@@ -121,14 +121,14 @@ export async function ensureAgentStatusLoaded(): Promise<AgentWithStatus[]> {
 
 export function getFirstAvailableAgent(): AgentConfig {
   const agents = getAgentsWithStatus();
-  console.log("[Eisen] Agent availability:", agents.map((a) => `${a.name}: ${a.available}`).join(", "));
+  console.error("[Eisen] Agent availability:", agents.map((a) => `${a.name}: ${a.available}`).join(", "));
   const available = agents.find((a) => a.available);
   if (!available) {
-    console.log("[Eisen] No agents available, falling back to opencode");
+    console.error("[Eisen] No agents available, falling back to opencode");
     // Return opencode as fallback, but the caller should check isAgentAvailable first
     return AGENTS[0];
   }
-  console.log(`[Eisen] First available agent: ${available.name}`);
+  console.error(`[Eisen] First available agent: ${available.name}`);
   return available;
 }
 

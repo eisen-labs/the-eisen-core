@@ -69,7 +69,7 @@ export class EisenOrchestrator {
     this.connectTcp(conn);
     this.emitAgentUpdate();
 
-    console.log(`[Orchestrator] Added agent ${displayName} (${instanceId}) on port ${tcpPort}`);
+    console.error(`[Orchestrator] Added agent ${displayName} (${instanceId}) on port ${tcpPort}`);
   }
 
   removeAgent(instanceId: string): void {
@@ -78,7 +78,7 @@ export class EisenOrchestrator {
       console.warn(`[Orchestrator] removeAgent called for unknown instanceId=${instanceId}, ignoring`);
       return;
     }
-    console.log(
+    console.error(
       `[Orchestrator] Removing agent ${conn.displayName} (${instanceId}), mergedState has ${this.mergedState.size} nodes`,
     );
 
@@ -108,7 +108,7 @@ export class EisenOrchestrator {
 
     this.emitMergedDelta(updatedPaths, removedPaths);
 
-    console.log(`[Orchestrator] Removed agent ${conn.displayName} (${instanceId})`);
+    console.error(`[Orchestrator] Removed agent ${conn.displayName} (${instanceId})`);
   }
 
   getMergedSnapshot(): MergedGraphSnapshot {
@@ -178,10 +178,10 @@ export class EisenOrchestrator {
       conn.socket.destroy();
     }
 
-    console.log(`[Orchestrator] Connecting to eisen-core TCP on port ${conn.tcpPort} for ${conn.displayName}`);
+    console.error(`[Orchestrator] Connecting to eisen-core TCP on port ${conn.tcpPort} for ${conn.displayName}`);
 
     const socket = net.createConnection({ host: "127.0.0.1", port: conn.tcpPort }, () => {
-      console.log(`[Orchestrator] Connected to ${conn.displayName} TCP on port ${conn.tcpPort}`);
+      console.error(`[Orchestrator] Connected to ${conn.displayName} TCP on port ${conn.tcpPort}`);
       conn.connected = true;
       this.emitAgentUpdate();
     });
@@ -228,7 +228,7 @@ export class EisenOrchestrator {
     });
 
     socket.on("close", () => {
-      console.log(`[Orchestrator] TCP connection closed for ${conn.displayName}`);
+      console.error(`[Orchestrator] TCP connection closed for ${conn.displayName}`);
       conn.connected = false;
       conn.socket = null;
       this.emitAgentUpdate();
@@ -247,13 +247,13 @@ export class EisenOrchestrator {
         conn.processor.processUsage(msg);
         break;
       default:
-        console.log(`[Orchestrator] Unknown message type from ${conn.displayName}:`, (msg as { type: string }).type);
+        console.error(`[Orchestrator] Unknown message type from ${conn.displayName}:`, (msg as { type: string }).type);
     }
   }
 
   private handleSnapshot(conn: AgentConnection, msg: WireMessage & { type: "snapshot" }): void {
     const processed = conn.processor.processSnapshot(msg);
-    console.log(
+    console.error(
       `[Orchestrator] Received snapshot from ${conn.displayName} (${conn.instanceId}): seq=${processed.seq}, ${processed.nodes.size} nodes`,
     );
     conn.lastSeq = processed.seq;
@@ -291,7 +291,7 @@ export class EisenOrchestrator {
     const processed = conn.processor.processDelta(msg);
 
     if (processed.seq <= conn.lastSeq) {
-      console.log(
+      console.error(
         `[Orchestrator] Skipping stale delta from ${conn.displayName}: seq=${processed.seq} <= lastSeq=${conn.lastSeq}`,
       );
       return;

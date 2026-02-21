@@ -512,7 +512,7 @@ export class ACPClient {
 
     if (useEisenCore && corePath) {
       this._instanceId = `${this.agentConfig.id}-${Math.random().toString(36).slice(2, 8)}`;
-      console.log(
+      console.error(
         `[ACP] Generated instanceId="${this._instanceId}" for agent "${this.agentConfig.id}" (eisen-core at ${corePath})`,
       );
 
@@ -570,7 +570,7 @@ export class ACPClient {
 
     try {
       const { command, args } = this.buildSpawnCommand();
-      console.log(`[ACP] Spawning: ${command} ${args.join(" ")}`);
+      console.error(`[ACP] Spawning: ${command} ${args.join(" ")}`);
 
       const proc = this.spawnFn(command, args, {
         stdio: ["pipe", "pipe", "pipe"],
@@ -591,7 +591,7 @@ export class ACPClient {
           const portMatch = text.match(/eisen-core tcp port: (\d+)/);
           if (portMatch) {
             this._tcpPort = parseInt(portMatch[1], 10);
-            console.log(`[ACP] eisen-core TCP port: ${this._tcpPort} (instanceId=${spawnedInstanceId})`);
+            console.error(`[ACP] eisen-core TCP port: ${this._tcpPort} (instanceId=${spawnedInstanceId})`);
             for (const waiter of this.tcpPortWaiters) {
               clearTimeout(waiter.timer);
               waiter.resolve(this._tcpPort);
@@ -632,7 +632,7 @@ export class ACPClient {
       });
 
       proc.on("exit", (code) => {
-        console.log(
+        console.error(
           `[ACP] Process exited with code=${code} (instanceId=${spawnedInstanceId}, isCurrentProcess=${this.process === proc})`,
         );
         if (this.process === proc) {
@@ -872,7 +872,7 @@ export class ACPClient {
   }
 
   dispose(): void {
-    console.log(
+    console.error(
       `[ACP] dispose() called for agent "${this.agentConfig.id}" (instanceId=${this._instanceId}, state=${this.state})`,
     );
     if (this.process) {

@@ -422,6 +422,37 @@ class Eisen {
         if (ac) this.chat.setCommands(ac);
         return;
       }
+      case "instanceList": {
+        const instances = msg.instances as any[];
+        if (Array.isArray(instances)) {
+          const agents: AgentInfo[] = instances.map((i) => ({
+            instanceId: i.key,
+            displayName: i.label,
+            agentType: i.agentType,
+            color: i.color,
+            connected: i.connected,
+          }));
+          this.state.agents = agents;
+          this.topBar.apply(agents);
+          for (const i of instances) {
+            if (i.isStreaming) this.topBar.setStreaming(i.key, true);
+          }
+        }
+        return;
+      }
+      case "instanceChanged": {
+        const key = msg.instanceKey as string | null;
+        if (key) {
+          this.chat.selectAgent(key);
+          this.topBar.select(key);
+        } else {
+          this.chat.clearAgent();
+        }
+        return;
+      }
+      case "connectionState":
+      case "streamingState":
+        return;
       default:
         // Try to handle generic {method, params} if they come through
         if ("method" in msg && "params" in msg) {
