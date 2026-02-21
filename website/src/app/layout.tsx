@@ -19,7 +19,7 @@ const instrumentSerif = Instrument_Serif({
 });
 
 export const metadata: Metadata = {
-  title: 'Eisen',
+  title: 'EisenLabs',
   description:
     'Real-time visualization layer for AI coding agents. See every file your agent reads, writes, and searches as a live force-directed graph in VS Code.',
 };

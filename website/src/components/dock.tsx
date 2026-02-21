@@ -70,7 +70,7 @@ export default function Dock() {
         {NAV.map((item) => (
           <li key={item.label}>
             <button
-              className="relative px-3 py-1 text-sm font-medium text-white"
+              className="relative px-3 py-1 text-sm font-medium"
               data-item={item.label}
               onClick={() => handleClick(item)}
               onMouseEnter={() => updateHighlight(item.label)}

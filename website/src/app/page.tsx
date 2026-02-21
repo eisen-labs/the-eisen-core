@@ -1,77 +1,42 @@
 import LogoMarquee from '@/components/logo-marquee';
+import WaitlistForm from '@/components/waitlist-form';
 
 export default function Home() {
   return (
     <>
-      <div className="grid min-h-screen grid-cols-1 gap-6 p-6 md:grid-cols-2">
-        <div className="bg-foreground/5 order-2 hidden overflow-hidden rounded-2xl md:order-1 md:block">
-          <video
-            autoPlay
-            loop
-            muted
-            playsInline
-            disablePictureInPicture
-            disableRemotePlayback
-            controlsList="nodownload nofullscreen noremoteplayback"
-            className="pointer-events-none h-full w-full object-cover"
-          >
-            <source src="/preview.mp4" type="video/mp4" />
-          </video>
+      <div className="flex min-h-screen flex-col justify-center px-8 py-6 md:px-24 lg:px-32">
+        <h1 className="mb-6 font-serif text-4xl sm:text-5xl md:text-6xl">
+          See your AI agents work.
+        </h1>
+        <p className="max-w-2xl text-base md:text-lg">
+          AI agents are rewriting your codebase, but their context, permissions, and decision-making
+          are completely invisible.{' '}
+          <span>As context windows grow, so do your costs. You have no way to see why.</span>
+        </p>
+        <p className="mt-4 max-w-2xl text-base md:text-lg">
+          Agent knowledge shouldn&apos;t be a black box.
+        </p>
+        <p className="mt-4 mb-8 max-w-2xl text-base md:text-lg">
+          <span>
+            EisenLabs brings full observability and transparency to AI-assisted development.
+          </span>{' '}
+          See every file your agent reads, every token it spends, and every decision it makes
+          &mdash; all in real time, right in your editor. Works with the agents you already use.
+        </p>
+        <div className="mb-10 max-w-xl">
+          <LogoMarquee
+            items={[
+              { src: '/brands/anthropic.svg', alt: 'Anthropic', height: 30 },
+              { src: '/brands/openai.svg', alt: 'OpenAI', height: 40, offsetY: 4 },
+              { src: '/brands/cursor.svg', alt: 'Cursor', height: 30 },
+              { src: '/brands/opencode.svg', alt: 'OpenCode', height: 40 },
+            ]}
+          />
         </div>
-
-        <div className="order-1 flex flex-col justify-center px-2 md:order-2 md:px-6 md:pt-0">
-          <h1 className="mb-6 font-serif text-4xl sm:text-5xl md:text-6xl">
-            See your AI agents work.
-          </h1>
-          <p className="text-base md:text-lg">Your agent&apos;s context and permissions</p>
-          <p className="text-base text-white md:text-lg">
-            are invisible &mdash; and you can&apos;t change them.
-          </p>
-
-          <div className="bg-foreground/5 my-8 aspect-video overflow-hidden rounded-2xl md:hidden">
-            <video
-              autoPlay
-              loop
-              muted
-              playsInline
-              disablePictureInPicture
-              disableRemotePlayback
-              controlsList="nodownload nofullscreen noremoteplayback"
-              className="pointer-events-none h-full w-full object-cover"
-            >
-              <source src="/preview.mp4" type="video/mp4" />
-            </video>
-          </div>
-
-          <p className="mt-0 text-base md:mt-4 md:text-lg">
-            We provide the observability layer your AI workflow is missing.
-          </p>
-          <p className="mb-8 text-base md:text-lg">
-            Works with the agents you already use, in your editor.
-          </p>
-          <div className="mb-10">
-            <LogoMarquee
-              items={[
-                { src: '/brands/anthropic.svg', alt: 'Anthropic', height: 30 },
-                { src: '/brands/openai.svg', alt: 'OpenAI', height: 40, offsetY: 4 },
-                { src: '/brands/cursor.svg', alt: 'Cursor', height: 30 },
-                { src: '/brands/opencode.svg', alt: 'OpenCode', height: 40 },
-              ]}
-            />
-          </div>
-          <a
-            href="#"
-            className="inline-flex w-fit rounded-lg bg-white px-4 py-1.5 text-sm font-medium text-black transition-colors hover:bg-gray-300"
-          >
-            Join the waitlist
-          </a>
-          <p className="text-foreground/50 mt-12 text-sm md:hidden">
-            &copy; {new Date().getFullYear()} Eisen. All rights reserved.
-          </p>
-        </div>
+        <WaitlistForm />
       </div>
-      <div className="text-foreground/50 fixed right-6 bottom-6 hidden text-sm md:block">
-        &copy; {new Date().getFullYear()} Eisen. All rights reserved.
+      <div className="text-foreground/50 fixed right-6 bottom-6 text-sm">
+        &copy; {new Date().getFullYear()} EisenLabs. All rights reserved.
       </div>
     </>
   );

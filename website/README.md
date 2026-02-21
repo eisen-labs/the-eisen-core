@@ -1,4 +1,4 @@
-# Eisen Website
+# EisenLabs Website
 
 ## Getting Started
 

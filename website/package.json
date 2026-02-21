@@ -1,5 +1,5 @@
 {
-  "name": "eisen-website",
+  "name": "eisenlabs-website",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -10,6 +10,7 @@
     "format": "prettier --write ."
   },
   "dependencies": {
+    "@neondatabase/serverless": "^1.0.2",
     "@react-three/drei": "^10.7.6",
     "@react-three/fiber": "^9.4.0",
     "framer-motion": "^12.23.24",
