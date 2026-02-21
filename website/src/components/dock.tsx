@@ -1,96 +1,89 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 
-const NAV = ['Use cases', 'Pricing', 'Docs', 'Login'] as const;
+const NAV = [
+  { label: 'Use cases', section: 'usecases' },
+  { label: 'Pricing', section: 'pricing' },
+  { label: 'Docs', href: '/docs' },
+  { label: 'Login', href: '/login' },
+] as const;
 
 export default function Dock() {
-  const [focused, setFocused] = useState<string | null>(null);
   const [highlight, setHighlight] = useState({ left: 0, width: 0, opacity: 0 });
   const navRef = useRef<HTMLUListElement>(null);
   const router = useRouter();
-  const isHome = typeof window !== 'undefined' && window.location.pathname === '/';
 
-  const scrollToSection = (id: string) => {
-    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  };
-
-  useEffect(() => {
-    if (!focused || !navRef.current) return setHighlight((h) => ({ ...h, opacity: 0 }));
-
-    const btn = navRef.current.querySelector(`[data-item="${focused}"]`) as HTMLElement;
-    if (!btn) return setHighlight((h) => ({ ...h, opacity: 0 }));
-
+  const updateHighlight = useCallback((label: string | null) => {
+    if (!label || !navRef.current) {
+      setHighlight((h) => ({ ...h, opacity: 0 }));
+      return;
+    }
+    const btn = navRef.current.querySelector(`[data-item="${label}"]`) as HTMLElement;
+    if (!btn) {
+      setHighlight((h) => ({ ...h, opacity: 0 }));
+      return;
+    }
     const navRect = navRef.current.getBoundingClientRect();
     const btnRect = btn.getBoundingClientRect();
+    setHighlight({ left: btnRect.left - navRect.left, width: btnRect.width, opacity: 0.2 });
+  }, []);
 
-    setHighlight({
-      left: btnRect.left - navRect.left,
-      width: btnRect.width,
-      opacity: 0.2,
-    });
-  }, [focused]);
-
-  const handleKey = (e: React.KeyboardEvent) => {
-    const i = focused ? NAV.indexOf(focused as (typeof NAV)[number]) : 0;
-    if (e.code === 'ArrowRight') setFocused(NAV[(i + 1) % NAV.length]);
-    if (e.code === 'ArrowLeft') setFocused(NAV[(i - 1 + NAV.length) % NAV.length]);
+  const handleClick = (item: (typeof NAV)[number]) => {
+    if ('section' in item) {
+      const el = document.getElementById(item.section);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      else router.push(`/#${item.section}`);
+    } else {
+      router.push(item.href);
+    }
   };
 
   return (
-    <nav className="relative w-82 rounded-full border border-white/20 bg-white/10 shadow-lg backdrop-blur-md sm:w-96">
+    <nav className="relative w-auto rounded-full border border-white/20 bg-white/10 shadow-lg backdrop-blur-md">
       <ul
         ref={navRef}
-        className="relative flex w-full items-center p-2"
-        onMouseLeave={() => setFocused(null)}
+        className="relative flex items-center p-2"
+        onMouseLeave={() => updateHighlight(null)}
       >
         <li className="hidden items-center pl-4 sm:flex">
           <button
-            onClick={() => {
-              if (isHome) {
-                scrollToSection('index');
-              }
-            }}
+            onClick={() =>
+              document
+                .getElementById('index')
+                ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+            }
           >
-            <Image src="/logo.svg" alt="Logo" width={20} height={20} className="h-5 w-5" />
+            <Image
+              src="/wordmark.svg"
+              alt="Logo"
+              width={20}
+              height={20}
+              className="h-5 w-10 translate-y-[0.5px]"
+            />
           </button>
           <div className="bg-foreground/25 mr-1 ml-5 h-6 w-px" />
         </li>
 
         {NAV.map((item) => (
-          <li key={item}>
+          <li key={item.label}>
             <button
-              className="text-md relative px-3 py-1 font-medium text-gray-300"
-              data-item={item}
-              onClick={() => {
-                if (item === 'Use cases') {
-                  isHome ? scrollToSection('usecases') : router.push('/#usecases');
-                }
-                if (item === 'Pricing') {
-                  isHome ? scrollToSection('pricing') : router.push('/#pricing');
-                }
-                if (item === 'Docs') {
-                  router.push('/docs');
-                }
-              }}
-              onMouseEnter={() => setFocused(item)}
-              onFocus={() => setFocused(item)}
-              onKeyDown={handleKey}
+              className="relative px-3 py-1 text-sm font-medium text-white"
+              data-item={item.label}
+              onClick={() => handleClick(item)}
+              onMouseEnter={() => updateHighlight(item.label)}
+              onFocus={() => updateHighlight(item.label)}
             >
-              {item}
+              {item.label}
             </button>
           </li>
         ))}
 
         <div
           className="pointer-events-none absolute hidden h-8 rounded-full bg-blue-300 transition-all duration-300 ease-out md:block"
-          style={{
-            left: highlight.left,
-            width: highlight.width,
-            opacity: highlight.opacity,
-          }}
+          style={{ left: highlight.left, width: highlight.width, opacity: highlight.opacity }}
         />
       </ul>
     </nav>

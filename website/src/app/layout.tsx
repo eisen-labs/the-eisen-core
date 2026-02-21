@@ -19,9 +19,9 @@ const instrumentSerif = Instrument_Serif({
 });
 
 export const metadata: Metadata = {
-  title: 'Constellation',
+  title: 'Eisen',
   description:
-    'Access different LLMs through dedicated infrastructure with transparent, fixed pricing.',
+    'Real-time visualization layer for AI coding agents. See every file your agent reads, writes, and searches as a live force-directed graph in VS Code.',
 };
 
 export default function RootLayout({
