@@ -1,10 +1,10 @@
 import { neon } from '@neondatabase/serverless';
 import { NextResponse } from 'next/server';
 
-const sql = neon(process.env.DATABASE_URL!);
 const hits = new Map<string, { n: number; reset: number }>();
 
 export async function POST(req: Request) {
+  const sql = neon(process.env.DATABASE_URL!);
   const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? '?';
   const now = Date.now();
   const h = hits.get(ip);
