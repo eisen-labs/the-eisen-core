@@ -3,11 +3,14 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  --muted: #737373;
+  --logo-invert: invert(1);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
   --font-serif: var(--font-instrument-serif);
@@ -17,7 +20,27 @@
   :root {
     --background: #0a0a0a;
     --foreground: #ededed;
+    --muted: #a3a3a3;
+    --logo-invert: none;
   }
+}
+
+:root[data-theme='light'] {
+  --background: #ffffff;
+  --foreground: #171717;
+  --muted: #737373;
+  --logo-invert: invert(1);
+}
+
+:root[data-theme='dark'] {
+  --background: #0a0a0a;
+  --foreground: #ededed;
+  --muted: #a3a3a3;
+  --logo-invert: none;
+}
+
+.marquee-logo {
+  filter: var(--logo-invert);
 }
 
 body {

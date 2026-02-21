@@ -31,7 +31,7 @@ export default function LogoMarquee({ items, pixelsPerSecond = 40 }: LogoMarquee
                 alt={item.alt}
                 width={item.width}
                 height={item.height}
-                className="opacity-80 grayscale transition-all duration-300 ease-out hover:opacity-100 hover:grayscale-0"
+                className="marquee-logo opacity-80 grayscale transition-all duration-300 ease-out hover:opacity-100 hover:grayscale-0"
               />
             </div>
           )),
