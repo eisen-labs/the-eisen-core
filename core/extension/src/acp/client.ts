@@ -6,6 +6,7 @@ import {
   type AvailableCommand,
   type Client,
   ClientSideConnection,
+  type ContentBlock,
   type CreateTerminalRequest,
   type CreateTerminalResponse,
   type InitializeResponse,
@@ -89,12 +90,9 @@ function getMimeType(filePath: string): string {
   return MIME_TYPE_MAP[ext] || "text/plain";
 }
 
-/** Max size per individual file when embedding directory contents */
-const DIR_FILE_SIZE_LIMIT = 32 * 1024; // 32 KB
-/** Max total embedded content for a single directory attachment */
-const DIR_TOTAL_BUDGET = 512 * 1024; // 512 KB
+const DIR_FILE_SIZE_LIMIT = 32 * 1024; // 32 KB per file
+const DIR_TOTAL_BUDGET = 512 * 1024; // 512 KB total per directory attachment
 
-/** Directories and patterns to exclude when walking a directory tree */
 const DIR_EXCLUDE_NAMES = new Set([
   "node_modules",
   ".git",
@@ -111,7 +109,6 @@ const DIR_EXCLUDE_NAMES = new Set([
   ".DS_Store",
 ]);
 
-/** File extensions considered binary (skip embedding) */
 const BINARY_EXTENSIONS = new Set([
   ".png",
   ".jpg",
@@ -171,10 +168,7 @@ interface DirEntry {
   isDirectory: boolean;
 }
 
-/**
- * Recursively enumerate files and directories, respecting exclusions.
- * Returns entries sorted by relative path.
- */
+/** Recursively enumerate directory entries, respecting exclusions. */
 async function walkDirectory(dirPath: string, rootPath: string, maxFiles = 500): Promise<DirEntry[]> {
   const entries: DirEntry[] = [];
 
@@ -187,10 +181,9 @@ async function walkDirectory(dirPath: string, rootPath: string, maxFiles = 500):
         withFileTypes: true,
       });
     } catch {
-      return; // permission denied or similar
+      return;
     }
 
-    // Sort entries for deterministic output
     dirEntries.sort((a, b) => a.name.localeCompare(b.name));
 
     for (const entry of dirEntries) {
@@ -221,9 +214,6 @@ async function walkDirectory(dirPath: string, rootPath: string, maxFiles = 500):
   return entries;
 }
 
-/**
- * Build an ASCII-style tree text block from directory entries.
- */
 function buildDirectoryTree(dirName: string, entries: DirEntry[]): string {
   const lines: string[] = [`Directory: ${dirName}/`];
 
@@ -251,17 +241,15 @@ async function buildPromptBlocks(
   text: string,
   chips: ContextChipData[] | undefined,
   supportsEmbeddedContext: boolean,
-): Promise<Array<Record<string, unknown>>> {
-  const blocks: Array<Record<string, unknown>> = [];
+): Promise<ContentBlock[]> {
+  const blocks: ContentBlock[] = [];
 
   if (chips && chips.length > 0) {
     for (const chip of chips) {
       if (chip.isDirectory) {
-        // Directory attachment: expand into tree + per-file blocks
         const dirBlocks = await buildDirectoryBlocks(chip.filePath, chip.fileName, supportsEmbeddedContext);
         blocks.push(...dirBlocks);
       } else if (chip.range) {
-        // Line-range selection: ALWAYS embed content (agent can't read partial files)
         const content = await readFileContent(chip.filePath, chip.range);
         blocks.push({
           type: "resource",
@@ -272,7 +260,6 @@ async function buildPromptBlocks(
           },
         });
       } else if (supportsEmbeddedContext) {
-        // Whole file + agent supports embedded context: embed it (preferred per ACP spec)
         const content = await readFileContent(chip.filePath);
         blocks.push({
           type: "resource",
@@ -283,7 +270,6 @@ async function buildPromptBlocks(
           },
         });
       } else {
-        // Whole file + no embedded context support: use resource_link (baseline)
         blocks.push({
           type: "resource_link",
           uri: `file://${chip.filePath}`,
@@ -294,7 +280,6 @@ async function buildPromptBlocks(
     }
   }
 
-  // User text is always the last block
   if (text) {
     blocks.push({ type: "text", text });
   }
@@ -302,25 +287,19 @@ async function buildPromptBlocks(
   return blocks;
 }
 
-/**
- * Expand a directory attachment into ACP content blocks:
- * 1. A text block with the ASCII directory tree
- * 2. Per-file resource or resource_link blocks (respecting size budgets)
- */
+/** Expand a directory attachment into a tree block + per-file content blocks. */
 async function buildDirectoryBlocks(
   dirPath: string,
   dirName: string,
   supportsEmbeddedContext: boolean,
-): Promise<Array<Record<string, unknown>>> {
-  const blocks: Array<Record<string, unknown>> = [];
+): Promise<ContentBlock[]> {
+  const blocks: ContentBlock[] = [];
 
   const entries = await walkDirectory(dirPath, dirPath);
 
-  // 1. Directory tree text block
   const treeText = buildDirectoryTree(dirName, entries);
   blocks.push({ type: "text", text: treeText });
 
-  // 2. Per-file blocks
   const fileEntries = entries.filter((e) => !e.isDirectory);
   let totalEmbedded = 0;
 
@@ -328,7 +307,6 @@ async function buildDirectoryBlocks(
     if (isBinaryFile(entry.absolutePath)) continue;
 
     if (supportsEmbeddedContext && totalEmbedded < DIR_TOTAL_BUDGET) {
-      // Try to embed the file content
       try {
         const stat = await fs.promises.stat(entry.absolutePath);
         if (stat.size <= DIR_FILE_SIZE_LIMIT) {
@@ -348,11 +326,10 @@ async function buildDirectoryBlocks(
           }
         }
       } catch {
-        // Fall through to resource_link
+        // Fall through to resource_link below
       }
     }
 
-    // Fallback: resource_link (baseline)
     blocks.push({
       type: "resource_link",
       uri: `file://${entry.absolutePath}`,
@@ -420,18 +397,18 @@ export class ACPClient {
   private extensionUri: { fsPath: string } | null;
   private supportsEmbeddedContext = false;
 
-  /** Unique instance ID for this agent connection (e.g. "opencode-a1b2c3") */
   private _instanceId: string | null = null;
-
-  /** TCP port for the eisen-core delta server, parsed from stderr */
   private _tcpPort: number | null = null;
-  private tcpPortResolvers: Array<(port: number) => void> = [];
+  private tcpPortWaiters: Array<{
+    resolve: (port: number) => void;
+    reject: (err: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }> = [];
 
-  /** Stderr throttle: buffer stderr chunks and flush at most every 50ms */
   private stderrThrottleBuffer = "";
   private stderrThrottleTimer: ReturnType<typeof setTimeout> | null = null;
   private static readonly STDERR_THROTTLE_MS = 50;
-  private static readonly STDERR_BUFFER_MAX = 16 * 1024; // 16 KB max buffered stderr
+  private static readonly STDERR_BUFFER_MAX = 16 * 1024;
 
   constructor(options?: ACPClientOptions) {
     this.agentConfig = options?.agentConfig ?? getDefaultAgent();
@@ -444,22 +421,17 @@ export class ACPClient {
     return this._tcpPort;
   }
 
-  /** Unique instance ID for this connection, available after connect() */
   get instanceId(): string | null {
     return this._instanceId;
   }
 
-  /** Wait for the TCP port to be available (parsed from eisen-core stderr) */
   waitForTcpPort(timeoutMs = 10000): Promise<number> {
     if (this._tcpPort !== null) return Promise.resolve(this._tcpPort);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         reject(new Error("Timed out waiting for TCP port"));
       }, timeoutMs);
-      this.tcpPortResolvers.push((port) => {
-        clearTimeout(timer);
-        resolve(port);
-      });
+      this.tcpPortWaiters.push({ resolve, reject, timer });
     });
   }
 
@@ -525,14 +497,10 @@ export class ACPClient {
     return this.state;
   }
 
-  /**
-   * Build the command + args to spawn, wrapping the agent with eisen-core
-   * when the binary is available.
-   */
+  /** Build spawn command, wrapping the agent with eisen-core when available. */
   private buildSpawnCommand(): { command: string; args: string[] } {
     const corePath = this.extensionUri ? getCorePath(this.extensionUri) : null;
 
-    // Check if eisen-core binary exists
     let useEisenCore = false;
     if (corePath) {
       try {
@@ -543,13 +511,11 @@ export class ACPClient {
     }
 
     if (useEisenCore && corePath) {
-      // Generate a unique instance ID for this connection
       this._instanceId = `${this.agentConfig.id}-${Math.random().toString(36).slice(2, 8)}`;
       console.log(
         `[ACP] Generated instanceId="${this._instanceId}" for agent "${this.agentConfig.id}" (eisen-core at ${corePath})`,
       );
 
-      // Wrap: eisen-core observe --port 0 --agent-id <id> -- <agent-command> <agent-args...>
       return {
         command: corePath,
         args: [
@@ -565,7 +531,6 @@ export class ACPClient {
       };
     }
 
-    // Fallback: spawn agent directly (no graph tracking)
     return {
       command: this.agentConfig.command,
       args: this.agentConfig.args,
@@ -597,10 +562,9 @@ export class ACPClient {
       );
     }
 
-    // Reset state from any previous connection
     this._instanceId = null;
     this._tcpPort = null;
-    this.tcpPortResolvers = [];
+    this.rejectTcpPortWaiters("Connection reset");
 
     this.setState("connecting");
 
@@ -618,27 +582,24 @@ export class ACPClient {
       });
       this.process = proc;
 
-      // Capture the instanceId at spawn time so exit/error handlers use the correct one
       const spawnedInstanceId = this._instanceId;
 
       proc.stderr?.on("data", (data: Buffer) => {
         const text = data.toString();
 
-        // Parse eisen-core TCP port from stderr immediately (latency-sensitive)
         if (this.process === proc) {
           const portMatch = text.match(/eisen-core tcp port: (\d+)/);
           if (portMatch) {
             this._tcpPort = parseInt(portMatch[1], 10);
             console.log(`[ACP] eisen-core TCP port: ${this._tcpPort} (instanceId=${spawnedInstanceId})`);
-            for (const resolve of this.tcpPortResolvers) {
-              resolve(this._tcpPort);
+            for (const waiter of this.tcpPortWaiters) {
+              clearTimeout(waiter.timer);
+              waiter.resolve(this._tcpPort);
             }
-            this.tcpPortResolvers = [];
+            this.tcpPortWaiters = [];
           }
         }
 
-        // Throttle stderr to avoid overwhelming the extension host event loop
-        // when multiple agents produce heavy output simultaneously
         this.stderrThrottleBuffer += text;
         if (this.stderrThrottleBuffer.length > ACPClient.STDERR_BUFFER_MAX) {
           this.stderrThrottleBuffer = this.stderrThrottleBuffer.slice(-ACPClient.STDERR_BUFFER_MAX);
@@ -650,14 +611,13 @@ export class ACPClient {
             this.stderrThrottleBuffer = "";
             if (buffered) {
               console.error("[ACP stderr]", buffered.length > 500 ? buffered.slice(-500) : buffered);
-              this.stderrListeners.forEach((cb) => cb(buffered));
+              for (const cb of this.stderrListeners) cb(buffered);
             }
           }, ACPClient.STDERR_THROTTLE_MS);
         }
       });
 
-      // Track early process exit/error so we can reject the initialize() call
-      // if the process dies before the ACP handshake completes.
+      // Reject initialize() if the process dies before the ACP handshake completes
       let earlyExitReject: ((err: Error) => void) | null = null;
       const earlyExitPromise = new Promise<never>((_, reject) => {
         earlyExitReject = reject;
@@ -665,7 +625,6 @@ export class ACPClient {
 
       proc.on("error", (error) => {
         console.error(`[ACP] Process error (instanceId=${spawnedInstanceId}):`, error);
-        // Only update state if this is still the active process
         if (this.process === proc) {
           this.setState("error");
         }
@@ -676,11 +635,8 @@ export class ACPClient {
         console.log(
           `[ACP] Process exited with code=${code} (instanceId=${spawnedInstanceId}, isCurrentProcess=${this.process === proc})`,
         );
-        // Only update state if this is still the active process.
-        // Stale processes from previous connect() calls should be ignored.
         if (this.process === proc) {
-          // If still connecting, don't transition to "disconnected" — let the
-          // connect() catch block handle it by setting "error" instead.
+          // Still connecting: let the catch block set "error" instead of "disconnected"
           if (!earlyExitReject) {
             this.setState("disconnected");
           }
@@ -695,9 +651,14 @@ export class ACPClient {
         );
       });
 
+      const stdin = this.process.stdin;
+      const stdout = this.process.stdout;
+      if (!stdin || !stdout) {
+        throw new Error("Process stdin/stdout not available");
+      }
       const stream = ndJsonStream(
-        Writable.toWeb(this.process.stdin!) as WritableStream<Uint8Array>,
-        Readable.toWeb(this.process.stdout!) as ReadableStream<Uint8Array>,
+        Writable.toWeb(stdin) as WritableStream<Uint8Array>,
+        Readable.toWeb(stdout) as ReadableStream<Uint8Array>,
       );
 
       const client: Client = {
@@ -716,8 +677,7 @@ export class ACPClient {
             const update = params.update as {
               availableCommands: AvailableCommand[];
             };
-            // Route commands to the correct session, or buffer if no session yet
-            const targetSessionId = (params as any).sessionId ?? this.activeSessionId;
+            const targetSessionId = params.sessionId ?? this.activeSessionId;
             const session = targetSessionId ? this.sessions.get(targetSessionId) : null;
             if (session?.metadata) {
               session.metadata.commands = update.availableCommands;
@@ -726,7 +686,7 @@ export class ACPClient {
             }
           }
           try {
-            this.sessionUpdateListeners.forEach((cb) => cb(params));
+            for (const cb of this.sessionUpdateListeners) cb(params);
           } catch (error) {
             console.error("[ACP] Error in session update listener:", error);
           }
@@ -777,9 +737,6 @@ export class ACPClient {
 
       this.connection = new ClientSideConnection(() => client, stream);
 
-      // Race the ACP initialize handshake against early process exit.
-      // If the agent process dies before responding, we get a clear error
-      // instead of hanging forever in "connecting" state.
       const initResponse = await Promise.race([
         this.connection.initialize({
           protocolVersion: 1,
@@ -798,13 +755,9 @@ export class ACPClient {
         earlyExitPromise,
       ]);
 
-      // Initialization succeeded — disarm the early exit rejection so
-      // later process exits go through normal disconnect handling only.
       earlyExitReject = null;
 
-      // Track agent's embedded context capability
-      const capabilities = (initResponse as any).capabilities;
-      this.supportsEmbeddedContext = capabilities?.promptCapabilities?.embeddedContext === true;
+      this.supportsEmbeddedContext = initResponse.agentCapabilities?.promptCapabilities?.embeddedContext === true;
 
       this.setState("connected");
       return initResponse;
@@ -899,7 +852,7 @@ export class ACPClient {
       const prompt = await buildPromptBlocks(message, contextChips, this.supportsEmbeddedContext);
       const response = await this.connection.prompt({
         sessionId: id,
-        prompt: prompt as any,
+        prompt,
       });
       return response;
     } catch (error) {
@@ -926,7 +879,6 @@ export class ACPClient {
       this.process.kill();
       this.process = null;
     }
-    // Clean up stderr throttle
     if (this.stderrThrottleTimer) {
       clearTimeout(this.stderrThrottleTimer);
       this.stderrThrottleTimer = null;
@@ -937,17 +889,24 @@ export class ACPClient {
     this.activeSessionId = null;
     this.pendingCommands = null;
     this.supportsEmbeddedContext = false;
-    // Fire "disconnected" BEFORE nulling instanceId so callbacks can read it
     this.setState("disconnected");
     this._instanceId = null;
     this._tcpPort = null;
-    this.tcpPortResolvers = [];
+    this.rejectTcpPortWaiters("Client disposed");
+  }
+
+  private rejectTcpPortWaiters(reason: string): void {
+    for (const waiter of this.tcpPortWaiters) {
+      clearTimeout(waiter.timer);
+      waiter.reject(new Error(reason));
+    }
+    this.tcpPortWaiters = [];
   }
 
   private setState(state: ACPConnectionState): void {
     if (this.state !== state) {
       this.state = state;
-      this.stateChangeListeners.forEach((cb) => cb(state));
+      for (const cb of this.stateChangeListeners) cb(state);
     }
   }
 }

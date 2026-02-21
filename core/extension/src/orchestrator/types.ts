@@ -1,6 +1,4 @@
-// ---------------------------------------------------------------------------
 // Wire protocol types — what eisen-core sends over TCP (snake_case JSON)
-// ---------------------------------------------------------------------------
 
 export interface WireFileNode {
   path: string;
@@ -48,10 +46,6 @@ export interface WireUsage {
 
 export type WireMessage = WireSnapshot | WireDelta | WireUsage;
 
-// ---------------------------------------------------------------------------
-// Normalized action type — collapse user_provided/user_referenced into read
-// ---------------------------------------------------------------------------
-
 export type NormalizedAction = "read" | "write" | "search";
 
 export function normalizeAction(action: string): NormalizedAction {
@@ -59,10 +53,6 @@ export function normalizeAction(action: string): NormalizedAction {
   if (action === "search") return "search";
   return "read";
 }
-
-// ---------------------------------------------------------------------------
-// Per-agent state for a single file (the CRDT "replica")
-// ---------------------------------------------------------------------------
 
 export interface AgentFileState {
   heat: number;
@@ -72,17 +62,9 @@ export interface AgentFileState {
   turnAccessed: number;
 }
 
-// ---------------------------------------------------------------------------
-// Merged file node — stored in the orchestrator
-// ---------------------------------------------------------------------------
-
 export interface MergedFileNode {
   path: string;
-
-  /** Per-agent replicas — the source of truth */
-  agents: Map<string, AgentFileState>; // keyed by instanceId
-
-  /** Derived merged view — recomputed from agents map */
+  agents: Map<string, AgentFileState>;
   heat: number;
   inContext: boolean;
   lastAction: NormalizedAction;
@@ -90,10 +72,7 @@ export interface MergedFileNode {
   lastActionTimestampMs: number;
 }
 
-// ---------------------------------------------------------------------------
-// Agent info — metadata about a connected agent
-// ---------------------------------------------------------------------------
-
+// Keep in sync with ui/src/theme.ts AGENT_COLORS
 export const AGENT_COLORS = [
   "#22d3ee", // cyan
   "#fb7185", // rose
@@ -105,24 +84,18 @@ export const AGENT_COLORS = [
 ];
 
 export interface AgentInfo {
-  instanceId: string; // "claude-code-f8k2m1"
-  displayName: string; // "claude_1"
-  agentType: string; // "claude-code"
-  color: string; // "#22d3ee"
+  instanceId: string;
+  displayName: string;
+  agentType: string;
+  color: string;
   connected: boolean;
 }
-
-// ---------------------------------------------------------------------------
-// Merged messages sent to the graph webview
-// ---------------------------------------------------------------------------
 
 export interface MergedGraphNode {
   inContext: boolean;
   changed: boolean;
   lastAction: NormalizedAction;
-  /** Per-agent heat for ring rendering: { "claude_1": 0.8, "opencode_1": 0.4 } */
   agentHeat: Record<string, number>;
-  /** Per-agent context status: { "claude_1": true, "opencode_1": false } */
   agentContext: Record<string, boolean>;
 }
 

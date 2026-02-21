@@ -126,13 +126,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   public onDidDisconnect: ((instanceId: string) => void) | null = null;
   public onActiveClientChanged: ((client: ACPClient) => void) | null = null;
 
-  /** Track instanceIds for which onDidConnect has fired, so we only fire onDidDisconnect for registered agents */
   private connectedInstanceIds = new Set<string>();
-
-  // --- Instance-based state ---
   private agentInstances = new Map<string, AgentInstance>();
   private currentInstanceKey: string | null = null;
-  private instanceCounters = new Map<string, number>(); // agentType -> counter
+  private instanceCounters = new Map<string, number>();
   private nextColorIndex = 0;
 
   private get activeInstance(): AgentInstance | undefined {
@@ -142,8 +139,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private get activeClient(): ACPClient | null {
     return this.activeInstance?.client ?? null;
   }
-
-  // --- Instance creation ---
 
   private createInstance(agentType: string): AgentInstance {
     if (this.agentInstances.size >= MAX_AGENT_INSTANCES) {
@@ -198,7 +193,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         `[Chat] Instance "${instanceKey}" (type=${inst?.agentType}) state -> "${state}" (instanceId=${client.instanceId}, isActive=${this.currentInstanceKey === instanceKey})`,
       );
 
-      // Always notify orchestrator of connects/disconnects, regardless of active instance
       if (state === "connected") {
         const instId = client.instanceId;
         if (instId) {
@@ -206,7 +200,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           console.log(`[Chat] Firing onDidConnect for instance "${instanceKey}" (instanceId=${instId})`);
         }
         this.onDidConnect?.(client);
-        // Send updated instance list (connected status changed)
         this.sendInstanceList();
       }
       if (state === "disconnected") {
@@ -215,16 +208,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this.connectedInstanceIds.delete(instId);
           console.log(`[Chat] Firing onDidDisconnect for instance "${instanceKey}" (instanceId=${instId})`);
           this.onDidDisconnect?.(instId);
-        } else if (instId) {
-          console.log(
-            `[Chat] Instance "${instanceKey}" process exited before fully connecting (instanceId=${instId}), no orchestrator cleanup needed`,
-          );
         }
-        // Send updated instance list (connected status changed)
         this.sendInstanceList();
       }
 
-      // Only notify the webview UI if this is the active instance
       if (this.currentInstanceKey === instanceKey) {
         this.postMessage({ type: "connectionState", state });
       }
@@ -234,7 +221,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (this.currentInstanceKey === instanceKey) {
         this.handleSessionUpdate(update);
       } else {
-        // Background instance: still accumulate streaming text
         const bgInst = this.agentInstances.get(instanceKey);
         if (
           bgInst &&
@@ -291,7 +277,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   ) {
     this.globalState = globalState;
 
-    // Start with no instances — user must explicitly add an agent
     this.currentInstanceKey = null;
   }
 
@@ -413,25 +398,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  // --- Instance switching ---
-
   private switchToInstance(instanceKey: string): void {
     if (instanceKey === this.currentInstanceKey) return;
     const target = this.agentInstances.get(instanceKey);
     if (!target) return;
-
-    // Save current instance's streaming text (stderrBuffer is already per-instance)
-    const current = this.activeInstance;
-    if (current) {
-      // streamingText is tracked per-instance already
-    }
 
     this.currentInstanceKey = instanceKey;
     this.globalState.update(SELECTED_AGENT_KEY, target.agentType);
 
     this.onActiveClientChanged?.(target.client);
 
-    // Notify webview
     this.postMessage({
       type: "instanceChanged",
       instanceKey,
@@ -467,7 +443,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const instance = this.agentInstances.get(instanceKey);
     if (!instance) return;
 
-    // Disconnect and dispose the client
     const instId = instance.client.instanceId;
     try {
       instance.client.dispose();
@@ -480,13 +455,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     this.agentInstances.delete(instanceKey);
 
-    // If we closed the active instance, switch to another
     if (this.currentInstanceKey === instanceKey) {
       const remaining = Array.from(this.agentInstances.keys());
       if (remaining.length > 0) {
         this.switchToInstance(remaining[remaining.length - 1]);
       } else {
-        // No instances left — go to empty state and reset counters
         this.currentInstanceKey = null;
         this.instanceCounters.clear();
         this.nextColorIndex = 0;
@@ -500,8 +473,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     this.sendInstanceList();
   }
-
-  // --- Instance list ---
 
   private getInstanceList(): InstanceInfo[] {
     const list: InstanceInfo[] = [];
@@ -525,8 +496,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       currentInstanceKey: this.currentInstanceKey,
     });
   }
-
-  // --- Existing methods, adapted for instance-based state ---
 
   public async newChat(): Promise<void> {
     await this.handleNewChat();
@@ -745,6 +714,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     this.agentInstances.clear();
     this.currentInstanceKey = null;
+    this.fileSearchService.dispose();
   }
 
   private handleSessionUpdate(notification: SessionNotification): void {

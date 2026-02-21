@@ -12,18 +12,12 @@ let orchestrator: EisenOrchestrator | undefined;
 export function activate(context: vscode.ExtensionContext) {
   console.log("Eisen extension is now active");
 
-  // Kick off async agent availability detection early (non-blocking).
-  // This replaces the previous execSync-based blocking probe.
   ensureAgentStatusLoaded().catch((e) => console.warn("[Eisen] Failed to probe agent availability:", e));
 
-  // Create the orchestrator — aggregates N eisen-core TCP streams
   orchestrator = new EisenOrchestrator();
-
-  // Create view providers
   graphProvider = new GraphViewProvider(context.extensionUri);
   chatProvider = new ChatViewProvider(context.extensionUri, context.globalState);
 
-  // Wire: orchestrator -> graph
   orchestrator.onMergedSnapshot = (snapshot) => {
     graphProvider?.setSnapshot(snapshot);
   };
@@ -34,8 +28,6 @@ export function activate(context: vscode.ExtensionContext) {
     graphProvider?.updateAgents(agents);
   };
 
-  // Wire: chat agent lifecycle -> orchestrator
-  // When any agent connects, register it with the orchestrator
   chatProvider.onDidConnect = async (client) => {
     const agentType = client.getAgentId();
     console.log(
@@ -59,14 +51,12 @@ export function activate(context: vscode.ExtensionContext) {
     }
   };
 
-  // When any agent disconnects, remove it from the orchestrator
   chatProvider.onDidDisconnect = (instanceId) => {
     console.log(`[Eisen] onDidDisconnect fired for instanceId=${instanceId}, removing from orchestrator`);
     orchestrator?.removeAgent(instanceId);
     console.log(`[Eisen] Agent removed, remaining agents: ${orchestrator?.agentCount}`);
   };
 
-  // When the active agent changes, register the new one if not already known
   chatProvider.onActiveClientChanged = async (client) => {
     if (!client) return;
     const agentType = client.getAgentId();
@@ -74,7 +64,6 @@ export function activate(context: vscode.ExtensionContext) {
       `[Extension] Active agent changed to type="${agentType}", instanceId=${client.instanceId}, connected=${client.isConnected()}, tcpPort=${client.tcpPort}`,
     );
 
-    // If this client is already connected and has a TCP port, register it
     if (client.isConnected() && client.tcpPort !== null) {
       const instanceId = client.instanceId;
       if (instanceId && agentType) {
@@ -90,10 +79,8 @@ export function activate(context: vscode.ExtensionContext) {
     if (!client.isConnected()) {
       await client.connect();
     }
-    // The onDidConnect callback will register with orchestrator
   };
 
-  // Register both webview views in the eisen container
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(GraphViewProvider.viewType, graphProvider, {
       webviewOptions: { retainContextWhenHidden: true },
@@ -106,7 +93,6 @@ export function activate(context: vscode.ExtensionContext) {
     }),
   );
 
-  // Commands
   context.subscriptions.push(
     vscode.commands.registerCommand("eisen.startChat", async () => {
       try {
@@ -165,7 +151,6 @@ export function activate(context: vscode.ExtensionContext) {
     }),
   );
 
-  // Cleanup on deactivate
   context.subscriptions.push({
     dispose: () => {
       chatProvider?.dispose();
@@ -177,7 +162,5 @@ export function activate(context: vscode.ExtensionContext) {
 
 export function deactivate() {
   console.log("Eisen extension deactivating");
-  chatProvider?.dispose();
-  graphProvider?.dispose();
-  orchestrator?.dispose();
+  // Disposal is handled by context.subscriptions
 }

@@ -44,7 +44,7 @@ export const ZOOM_FIT_DELAY = 300;
 export const ZOOM_FIT_DURATION = 400;
 export const ZOOM_FIT_PADDING = 40;
 
-// Agent color palette
+// Keep in sync with extension/src/orchestrator/types.ts AGENT_COLORS
 export const AGENT_COLORS = [
   "#22d3ee", // cyan
   "#fb7185", // rose

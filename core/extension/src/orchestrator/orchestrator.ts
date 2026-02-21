@@ -13,10 +13,6 @@ import type {
 } from "./types";
 import { AGENT_COLORS } from "./types";
 
-// ---------------------------------------------------------------------------
-// Internal agent connection state
-// ---------------------------------------------------------------------------
-
 interface AgentConnection {
   instanceId: string;
   agentType: string;
@@ -30,46 +26,22 @@ interface AgentConnection {
   lastSeq: number;
 }
 
-// ---------------------------------------------------------------------------
-// EisenOrchestrator
-// ---------------------------------------------------------------------------
-
 /**
- * The orchestrator is the sole consumer of eisen-core TCP streams.
- * It maintains connections to N eisen-core instances, merges their
- * data via CRDT, and emits unified snapshots/deltas to the graph.
+ * Sole consumer of eisen-core TCP streams. Maintains connections to N
+ * instances, merges their data via CRDT, and emits unified snapshots/deltas.
  */
 export class EisenOrchestrator {
   private connections = new Map<string, AgentConnection>();
   private mergedState = new Map<string, MergedFileNode>();
   private seq = 0;
 
-  /** Counter per agent type for display names: "claude-code" -> 1, 2, ... */
   private typeCounters = new Map<string, number>();
-
-  /** Color assignment counter */
   private nextColorIndex = 0;
 
-  // -----------------------------------------------------------------------
-  // Event callbacks — set by the extension wiring layer
-  // -----------------------------------------------------------------------
-
-  /** Called when a merged snapshot is ready (full state replacement) */
   onMergedSnapshot: ((snapshot: MergedGraphSnapshot) => void) | null = null;
-
-  /** Called when a merged delta is ready (incremental update) */
   onMergedDelta: ((delta: MergedGraphDelta) => void) | null = null;
-
-  /** Called when the agent list changes (connect/disconnect) */
   onAgentUpdate: ((agents: AgentInfo[]) => void) | null = null;
 
-  // -----------------------------------------------------------------------
-  // Public API
-  // -----------------------------------------------------------------------
-
-  /**
-   * Register and connect to a new agent's eisen-core TCP server.
-   */
   addAgent(instanceId: string, tcpPort: number, agentType: string): void {
     if (this.connections.has(instanceId)) {
       console.warn(`[Orchestrator] Agent ${instanceId} already registered, skipping`);
@@ -100,9 +72,6 @@ export class EisenOrchestrator {
     console.log(`[Orchestrator] Added agent ${displayName} (${instanceId}) on port ${tcpPort}`);
   }
 
-  /**
-   * Disconnect and remove an agent.
-   */
   removeAgent(instanceId: string): void {
     const conn = this.connections.get(instanceId);
     if (!conn) {
@@ -113,13 +82,11 @@ export class EisenOrchestrator {
       `[Orchestrator] Removing agent ${conn.displayName} (${instanceId}), mergedState has ${this.mergedState.size} nodes`,
     );
 
-    // Disconnect TCP
     if (conn.socket) {
       conn.socket.destroy();
       conn.socket = null;
     }
 
-    // Remove this agent's data from merged state
     const removedPaths: string[] = [];
     const updatedPaths: string[] = [];
 
@@ -132,7 +99,6 @@ export class EisenOrchestrator {
       }
     }
 
-    // Clean up empty nodes
     for (const path of removedPaths) {
       this.mergedState.delete(path);
     }
@@ -140,37 +106,15 @@ export class EisenOrchestrator {
     this.connections.delete(instanceId);
     this.emitAgentUpdate();
 
-    // Emit delta reflecting the removal
     this.emitMergedDelta(updatedPaths, removedPaths);
 
     console.log(`[Orchestrator] Removed agent ${conn.displayName} (${instanceId})`);
   }
 
-  /**
-   * Get a full merged snapshot of current state.
-   */
-  getMergedSnapshot(
-    baselineNodes?: Record<string, any>,
-    baselineCalls?: Array<{ from: string; to: string }>,
-  ): MergedGraphSnapshot {
+  getMergedSnapshot(): MergedGraphSnapshot {
     this.seq++;
     const nodes: Record<string, MergedGraphNode> = {};
 
-    // Include baseline nodes (workspace symbols)
-    if (baselineNodes) {
-      for (const [id, node] of Object.entries(baselineNodes)) {
-        nodes[id] = {
-          inContext: false,
-          changed: false,
-          lastAction: "read",
-          agentHeat: {},
-          agentContext: {},
-          ...node,
-        };
-      }
-    }
-
-    // Overlay merged live state
     for (const [path, node] of this.mergedState) {
       const agentHeat: Record<string, number> = {};
       const agentContext: Record<string, boolean> = {};
@@ -195,14 +139,11 @@ export class EisenOrchestrator {
     return {
       seq: this.seq,
       nodes,
-      calls: baselineCalls ?? [],
+      calls: [],
       agents: this.getAgentInfoList(),
     };
   }
 
-  /**
-   * Get the list of all known agents.
-   */
   getAgentInfoList(): AgentInfo[] {
     const list: AgentInfo[] = [];
     for (const conn of this.connections.values()) {
@@ -217,26 +158,10 @@ export class EisenOrchestrator {
     return list;
   }
 
-  /**
-   * Check if any agents are connected.
-   */
-  hasConnectedAgents(): boolean {
-    for (const conn of this.connections.values()) {
-      if (conn.connected) return true;
-    }
-    return false;
-  }
-
-  /**
-   * Get agent count.
-   */
   get agentCount(): number {
     return this.connections.size;
   }
 
-  /**
-   * Dispose all connections.
-   */
   dispose(): void {
     for (const conn of this.connections.values()) {
       if (conn.socket) {
@@ -247,10 +172,6 @@ export class EisenOrchestrator {
     this.connections.clear();
     this.mergedState.clear();
   }
-
-  // -----------------------------------------------------------------------
-  // TCP connection management
-  // -----------------------------------------------------------------------
 
   private connectTcp(conn: AgentConnection): void {
     if (conn.socket) {
@@ -314,10 +235,6 @@ export class EisenOrchestrator {
     });
   }
 
-  // -----------------------------------------------------------------------
-  // Message handling & merge
-  // -----------------------------------------------------------------------
-
   private handleMessage(conn: AgentConnection, msg: WireMessage): void {
     switch (msg.type) {
       case "snapshot":
@@ -327,12 +244,10 @@ export class EisenOrchestrator {
         this.handleDelta(conn, msg);
         break;
       case "usage":
-        // Usage messages are processed but not merged into graph state.
-        // Future: could track per-agent usage in the legend.
         conn.processor.processUsage(msg);
         break;
       default:
-        console.log(`[Orchestrator] Unknown message type from ${conn.displayName}:`, (msg as any).type);
+        console.log(`[Orchestrator] Unknown message type from ${conn.displayName}:`, (msg as { type: string }).type);
     }
   }
 
@@ -343,7 +258,6 @@ export class EisenOrchestrator {
     );
     conn.lastSeq = processed.seq;
 
-    // Clear this agent's existing entries from merged state
     for (const [path, node] of this.mergedState) {
       if (node.agents.has(conn.instanceId)) {
         removeAgentFromNode(node, conn.instanceId);
@@ -353,7 +267,6 @@ export class EisenOrchestrator {
       }
     }
 
-    // Apply all nodes from the snapshot
     for (const [path, update] of processed.nodes) {
       const agentState: AgentFileState = {
         heat: update.heat,
@@ -371,14 +284,12 @@ export class EisenOrchestrator {
       }
     }
 
-    // After a snapshot, emit a full merged snapshot to the graph
     this.emitFullSnapshot();
   }
 
   private handleDelta(conn: AgentConnection, msg: WireMessage & { type: "delta" }): void {
     const processed = conn.processor.processDelta(msg);
 
-    // Skip stale deltas
     if (processed.seq <= conn.lastSeq) {
       console.log(
         `[Orchestrator] Skipping stale delta from ${conn.displayName}: seq=${processed.seq} <= lastSeq=${conn.lastSeq}`,
@@ -390,7 +301,6 @@ export class EisenOrchestrator {
     const updatedPaths: string[] = [];
     const removedPaths: string[] = [];
 
-    // Apply updates
     for (const update of processed.updates) {
       const agentState: AgentFileState = {
         heat: update.heat,
@@ -409,7 +319,6 @@ export class EisenOrchestrator {
       updatedPaths.push(update.path);
     }
 
-    // Apply removals
     for (const path of processed.removed) {
       const node = this.mergedState.get(path);
       if (node) {
@@ -428,14 +337,8 @@ export class EisenOrchestrator {
     }
   }
 
-  // -----------------------------------------------------------------------
-  // Emit merged data to the graph
-  // -----------------------------------------------------------------------
-
   private emitFullSnapshot(): void {
     if (!this.onMergedSnapshot) return;
-    // The graph provider will call getMergedSnapshot() with its baseline
-    // nodes overlaid. We emit a signal and let it pull.
     this.onMergedSnapshot(this.getMergedSnapshot());
   }
 
@@ -485,14 +388,9 @@ export class EisenOrchestrator {
     this.onAgentUpdate?.(this.getAgentInfoList());
   }
 
-  // -----------------------------------------------------------------------
-  // Display name & color allocation
-  // -----------------------------------------------------------------------
-
   private allocateDisplayName(agentType: string): string {
     const count = (this.typeCounters.get(agentType) ?? 0) + 1;
     this.typeCounters.set(agentType, count);
-    // Simplify agent type for display: "claude-code" -> "claude"
     const shortType = agentType.split("-")[0];
     return `${shortType}_${count}`;
   }

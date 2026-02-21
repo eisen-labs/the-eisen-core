@@ -71,14 +71,33 @@ function getLanguageId(filePath: string): string {
 }
 
 export class FileSearchService {
+  private static readonly MAX_RECENT_FILES = 1000;
   private recentFiles: Map<string, number> = new Map();
+  private disposable: vscode.Disposable;
 
   constructor() {
-    vscode.workspace.onDidOpenTextDocument((doc) => {
+    this.disposable = vscode.workspace.onDidOpenTextDocument((doc) => {
       if (doc.uri.scheme === "file") {
+        // Evict oldest entry when at capacity
+        if (this.recentFiles.size >= FileSearchService.MAX_RECENT_FILES) {
+          let oldestKey: string | undefined;
+          let oldestTime = Number.POSITIVE_INFINITY;
+          for (const [key, time] of this.recentFiles) {
+            if (time < oldestTime) {
+              oldestTime = time;
+              oldestKey = key;
+            }
+          }
+          if (oldestKey) this.recentFiles.delete(oldestKey);
+        }
         this.recentFiles.set(doc.uri.fsPath, Date.now());
       }
     });
+  }
+
+  dispose(): void {
+    this.disposable.dispose();
+    this.recentFiles.clear();
   }
 
   async search(query: string, maxResults = 20): Promise<FileSearchResult[]> {
