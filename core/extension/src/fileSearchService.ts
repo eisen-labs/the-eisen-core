@@ -1,5 +1,5 @@
+import * as path from "node:path";
 import * as vscode from "vscode";
-import * as path from "path";
 
 export interface FileSearchResult {
   readonly path: string;
@@ -92,7 +92,7 @@ export class FileSearchService {
     const queryLower = query.toLowerCase();
 
     // Collect file results
-    let results: FileSearchResult[] = uris
+    const results: FileSearchResult[] = uris
       .filter((uri) => {
         if (query.trim() === "") return true;
         const fileName = path.basename(uri.fsPath).toLowerCase();
@@ -122,10 +122,7 @@ export class FileSearchService {
     const dirResults: FileSearchResult[] = [];
     for (const dirPath of dirSet) {
       const dirName = path.basename(dirPath);
-      const relPath = vscode.workspace.asRelativePath(
-        vscode.Uri.file(dirPath),
-        false
-      );
+      const relPath = vscode.workspace.asRelativePath(vscode.Uri.file(dirPath), false);
       if (
         query.trim() === "" ||
         dirName.toLowerCase().includes(queryLower) ||

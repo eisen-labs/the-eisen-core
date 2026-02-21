@@ -1,11 +1,4 @@
-import type {
-  WireSnapshot,
-  WireDelta,
-  WireUsage,
-  WireNodeUpdate,
-  WireFileNode,
-  NormalizedAction,
-} from "./types";
+import type { NormalizedAction, WireDelta, WireFileNode, WireNodeUpdate, WireSnapshot, WireUsage } from "./types";
 import { normalizeAction } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -81,10 +74,7 @@ export abstract class AgentProcessor {
 // Default normalization helpers
 // ---------------------------------------------------------------------------
 
-function normalizeFileNode(
-  path: string,
-  node: WireFileNode,
-): ProcessedNodeUpdate {
+function normalizeFileNode(path: string, node: WireFileNode): ProcessedNodeUpdate {
   return {
     path,
     heat: node.heat,

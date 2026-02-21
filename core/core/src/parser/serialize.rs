@@ -49,7 +49,7 @@ impl SymbolTree {
 
     fn node_to_serializable(&self, node_id: NodeId) -> SerializableNode {
         let data = self.get_node(node_id).expect("Node must exist");
-        
+
         let children: Option<Vec<SerializableNode>> = if self.get_children(node_id).is_empty() {
             None
         } else {
@@ -89,7 +89,7 @@ impl SymbolTree {
 
     fn node_to_serializable_flat(&self, node_id: NodeId) -> SerializableNode {
         let data = self.get_node(node_id).expect("Node must exist");
-        
+
         SerializableNode {
             id: data.id,
             name: data.name.clone(),

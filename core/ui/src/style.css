@@ -19,7 +19,7 @@ body {
 }
 
 #graph canvas {
-  cursor: default !important;
+  cursor: default;
 }
 
 .eisen-controls {

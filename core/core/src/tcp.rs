@@ -215,8 +215,7 @@ mod tests {
 
     /// Helper: start a TCP server on an ephemeral port, return the port
     /// and broadcast sender.
-    async fn start_test_server() -> (u16, broadcast::Sender<WireLine>, Arc<Mutex<ContextTracker>>)
-    {
+    async fn start_test_server() -> (u16, broadcast::Sender<WireLine>, Arc<Mutex<ContextTracker>>) {
         let tracker = Arc::new(Mutex::new(ContextTracker::new(TrackerConfig::default())));
         let (delta_tx, _) = broadcast::channel::<WireLine>(64);
 
@@ -298,19 +297,13 @@ mod tests {
     async fn client_request_snapshot() {
         let (port, _tx, tracker) = start_test_server().await;
 
-        tracker
-            .lock()
-            .await
-            .file_access("/src/a.rs", Action::Read);
+        tracker.lock().await.file_access("/src/a.rs", Action::Read);
 
         let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
         let _snap = read_line(&mut stream).await; // initial snapshot
 
         // Add another file after connection
-        tracker
-            .lock()
-            .await
-            .file_access("/src/b.rs", Action::Write);
+        tracker.lock().await.file_access("/src/b.rs", Action::Write);
 
         // Request snapshot
         stream

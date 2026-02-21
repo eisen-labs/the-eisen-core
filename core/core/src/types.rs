@@ -140,7 +140,12 @@ impl Default for TrackerConfig {
 // ---------------------------------------------------------------------------
 
 impl Snapshot {
-    pub fn new(agent_id: &str, session_id: &str, seq: u64, nodes: HashMap<String, FileNode>) -> Self {
+    pub fn new(
+        agent_id: &str,
+        session_id: &str,
+        seq: u64,
+        nodes: HashMap<String, FileNode>,
+    ) -> Self {
         Self {
             msg_type: "snapshot".to_string(),
             agent_id: agent_id.to_string(),
@@ -152,7 +157,13 @@ impl Snapshot {
 }
 
 impl Delta {
-    pub fn new(agent_id: &str, session_id: &str, seq: u64, updates: Vec<NodeUpdate>, removed: Vec<String>) -> Self {
+    pub fn new(
+        agent_id: &str,
+        session_id: &str,
+        seq: u64,
+        updates: Vec<NodeUpdate>,
+        removed: Vec<String>,
+    ) -> Self {
         Self {
             msg_type: "delta".to_string(),
             agent_id: agent_id.to_string(),

@@ -1,4 +1,4 @@
-import { execFile } from "child_process";
+import { execFile } from "node:child_process";
 
 export interface AgentConfig {
   id: string;
@@ -72,7 +72,7 @@ function isCommandAvailableAsync(command: string): Promise<boolean> {
         return;
       }
       const isAvailable = stdout.trim().length > 0;
-      console.log(`[Eisen] Command "${command}" available:`, isAvailable, stdout.trim().split('\n')[0]);
+      console.log(`[Eisen] Command "${command}" available:`, isAvailable, stdout.trim().split("\n")[0]);
       resolve(isAvailable);
     });
   });
@@ -90,7 +90,7 @@ export async function refreshAgentStatus(): Promise<AgentWithStatus[]> {
     AGENTS.map(async (agent) => ({
       ...agent,
       available: await isCommandAvailableAsync(agent.command),
-    }))
+    })),
   );
   cachedAgentsWithStatus = results;
   return results;
@@ -112,21 +112,23 @@ export function getAgentsWithStatus(forceRefresh = false): AgentWithStatus[] {
 export async function ensureAgentStatusLoaded(): Promise<AgentWithStatus[]> {
   if (cachedAgentsWithStatus) return cachedAgentsWithStatus;
   if (!cachePromise) {
-    cachePromise = refreshAgentStatus().finally(() => { cachePromise = null; });
+    cachePromise = refreshAgentStatus().finally(() => {
+      cachePromise = null;
+    });
   }
   return cachePromise;
 }
 
 export function getFirstAvailableAgent(): AgentConfig {
   const agents = getAgentsWithStatus();
-  console.log('[Eisen] Agent availability:', agents.map(a => `${a.name}: ${a.available}`).join(', '));
+  console.log("[Eisen] Agent availability:", agents.map((a) => `${a.name}: ${a.available}`).join(", "));
   const available = agents.find((a) => a.available);
   if (!available) {
-    console.log('[Eisen] No agents available, falling back to opencode');
+    console.log("[Eisen] No agents available, falling back to opencode");
     // Return opencode as fallback, but the caller should check isAgentAvailable first
     return AGENTS[0];
   }
-    console.log(`[Eisen] First available agent: ${available.name}`);
+  console.log(`[Eisen] First available agent: ${available.name}`);
   return available;
 }
 

@@ -13,9 +13,12 @@ impl RustParser {
     pub fn new() -> Self {
         let mut parser = Parser::new();
         let language = tree_sitter_rust::language();
-        parser.set_language(language)
+        parser
+            .set_language(language)
             .expect("Failed to load Rust grammar");
-        Self { parser: Mutex::new(parser) }
+        Self {
+            parser: Mutex::new(parser),
+        }
     }
 
     fn node_start_line(&self, node: &tree_sitter::Node) -> u32 {
@@ -27,10 +30,17 @@ impl RustParser {
     }
 
     fn extract_name(&self, node: &tree_sitter::Node, content: &str) -> Option<String> {
-        node.utf8_text(content.as_bytes()).ok().map(|s| s.to_string())
+        node.utf8_text(content.as_bytes())
+            .ok()
+            .map(|s| s.to_string())
     }
 
-    fn extract_calls_from_node(&self, node: tree_sitter::Node, content: &str, out: &mut Vec<String>) {
+    fn extract_calls_from_node(
+        &self,
+        node: tree_sitter::Node,
+        content: &str,
+        out: &mut Vec<String>,
+    ) {
         if node.kind() == "call_expression" {
             if let Some(func_node) = node.child_by_field_name("function") {
                 if let Some(name) = self.extract_callee_name(&func_node, content) {
@@ -71,12 +81,12 @@ impl LanguageParser for RustParser {
 
     fn parse_file(&self, content: &str, _path: &Path) -> Vec<Symbol> {
         let mut symbols = Vec::new();
-        
+
         let mut parser_guard = match self.parser.lock() {
             Ok(guard) => guard,
             Err(_) => return symbols,
         };
-        
+
         let tree = match parser_guard.parse(content, None) {
             Some(t) => t,
             None => return symbols,
@@ -134,7 +144,9 @@ impl LanguageParser for RustParser {
                     // Extract impl block name (trait or type)
                     if let Some(type_node) = child.child_by_field_name("type") {
                         if let Some(type_name) = self.extract_name(&type_node, content) {
-                            let impl_name = if let Some(trait_node) = child.child_by_field_name("trait") {
+                            let impl_name = if let Some(trait_node) =
+                                child.child_by_field_name("trait")
+                            {
                                 if let Some(trait_name) = self.extract_name(&trait_node, content) {
                                     format!("{} for {}", trait_name, type_name)
                                 } else {
@@ -143,7 +155,7 @@ impl LanguageParser for RustParser {
                             } else {
                                 type_name
                             };
-                            
+
                             symbols.push(Symbol {
                                 name: impl_name.clone(),
                                 kind: NodeKind::Impl,
@@ -158,11 +170,19 @@ impl LanguageParser for RustParser {
                                 let mut impl_cursor = body.walk();
                                 for impl_child in body.children(&mut impl_cursor) {
                                     if impl_child.kind() == "function_item" {
-                                        if let Some(fn_name_node) = impl_child.child_by_field_name("name") {
-                                            if let Some(fn_name) = self.extract_name(&fn_name_node, content) {
+                                        if let Some(fn_name_node) =
+                                            impl_child.child_by_field_name("name")
+                                        {
+                                            if let Some(fn_name) =
+                                                self.extract_name(&fn_name_node, content)
+                                            {
                                                 let mut calls = Vec::new();
-                                                if let Some(fn_body) = impl_child.child_by_field_name("body") {
-                                                    self.extract_calls_from_node(fn_body, content, &mut calls);
+                                                if let Some(fn_body) =
+                                                    impl_child.child_by_field_name("body")
+                                                {
+                                                    self.extract_calls_from_node(
+                                                        fn_body, content, &mut calls,
+                                                    );
                                                 }
                                                 symbols.push(Symbol {
                                                     name: fn_name,

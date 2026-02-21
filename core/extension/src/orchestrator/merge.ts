@@ -1,8 +1,4 @@
-import type {
-  AgentFileState,
-  MergedFileNode,
-  NormalizedAction,
-} from "./types";
+import type { AgentFileState, MergedFileNode, NormalizedAction } from "./types";
 
 // ---------------------------------------------------------------------------
 // Action priority for LWW tiebreak
@@ -36,9 +32,7 @@ export interface DerivedView {
  *
  * These guarantee convergence regardless of message ordering.
  */
-export function deriveMergedView(
-  agents: Map<string, AgentFileState>
-): DerivedView {
+export function deriveMergedView(agents: Map<string, AgentFileState>): DerivedView {
   let heat = 0;
   let inContext = false;
   let lastAction: NormalizedAction = "read";
@@ -56,8 +50,7 @@ export function deriveMergedView(
     const dominates =
       state.timestampMs > lastTimestamp ||
       (state.timestampMs === lastTimestamp &&
-        (ACTION_PRIORITY[state.lastAction] ?? 0) >
-          (ACTION_PRIORITY[lastAction] ?? 0));
+        (ACTION_PRIORITY[state.lastAction] ?? 0) > (ACTION_PRIORITY[lastAction] ?? 0));
 
     if (dominates) {
       lastAction = state.lastAction;
@@ -83,11 +76,7 @@ export function deriveMergedView(
  * Update a single agent's state within a merged file node and recompute
  * the derived view. Returns the updated node.
  */
-export function applyAgentUpdate(
-  node: MergedFileNode,
-  instanceId: string,
-  state: AgentFileState
-): MergedFileNode {
+export function applyAgentUpdate(node: MergedFileNode, instanceId: string, state: AgentFileState): MergedFileNode {
   node.agents.set(instanceId, state);
   const view = deriveMergedView(node.agents);
   node.heat = view.heat;
@@ -103,10 +92,7 @@ export function applyAgentUpdate(
  * Returns true if the node still has agents (should be kept),
  * false if the agents map is empty (should be removed).
  */
-export function removeAgentFromNode(
-  node: MergedFileNode,
-  instanceId: string
-): boolean {
+export function removeAgentFromNode(node: MergedFileNode, instanceId: string): boolean {
   node.agents.delete(instanceId);
 
   if (node.agents.size === 0) {
@@ -125,11 +111,7 @@ export function removeAgentFromNode(
 /**
  * Create a new MergedFileNode from an initial agent state.
  */
-export function createMergedNode(
-  path: string,
-  instanceId: string,
-  state: AgentFileState
-): MergedFileNode {
+export function createMergedNode(path: string, instanceId: string, state: AgentFileState): MergedFileNode {
   const agents = new Map<string, AgentFileState>();
   agents.set(instanceId, state);
   return {

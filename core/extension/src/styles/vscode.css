@@ -24,7 +24,7 @@ body {
 
 /* Focus styles */
 *:focus {
-  outline-color: var(--vscode-focusBorder) !important;
+  outline-color: var(--vscode-focusBorder);
 }
 
 *:focus-visible {
@@ -72,7 +72,7 @@ button {
   padding: var(--input-padding-vertical) var(--input-padding-horizontal);
   text-align: center;
   outline: 1px solid transparent;
-  outline-offset: 2px !important;
+  outline-offset: 2px;
   color: var(--vscode-button-foreground);
   background: var(--vscode-button-background);
   border-radius: var(--border-radius);

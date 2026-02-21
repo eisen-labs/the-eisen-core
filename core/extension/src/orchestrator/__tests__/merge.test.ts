@@ -1,13 +1,8 @@
-import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { describe, it } from "node:test";
 
-import {
-  deriveMergedView,
-  applyAgentUpdate,
-  removeAgentFromNode,
-  createMergedNode,
-} from "../merge";
-import type { AgentFileState, MergedFileNode } from "../types";
+import { applyAgentUpdate, createMergedNode, deriveMergedView, removeAgentFromNode } from "../merge";
+import type { AgentFileState } from "../types";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -24,9 +19,7 @@ function makeState(overrides: Partial<AgentFileState> = {}): AgentFileState {
   };
 }
 
-function makeAgentsMap(
-  entries: Array<[string, Partial<AgentFileState>]>
-): Map<string, AgentFileState> {
+function makeAgentsMap(entries: Array<[string, Partial<AgentFileState>]>): Map<string, AgentFileState> {
   const map = new Map<string, AgentFileState>();
   for (const [id, overrides] of entries) {
     map.set(id, makeState(overrides));
@@ -40,9 +33,7 @@ function makeAgentsMap(
 
 describe("deriveMergedView", () => {
   it("single agent returns that agent's state", () => {
-    const agents = makeAgentsMap([
-      ["agent-a", { heat: 0.7, inContext: true, lastAction: "write", timestampMs: 5000 }],
-    ]);
+    const agents = makeAgentsMap([["agent-a", { heat: 0.7, inContext: true, lastAction: "write", timestampMs: 5000 }]]);
     const view = deriveMergedView(agents);
     assert.equal(view.heat, 0.7);
     assert.equal(view.inContext, true);
@@ -126,10 +117,16 @@ describe("deriveMergedView", () => {
 
   it("commutativity: merge(A, B) === merge(B, A)", () => {
     const stateA: AgentFileState = makeState({
-      heat: 0.8, inContext: true, lastAction: "read", timestampMs: 1000,
+      heat: 0.8,
+      inContext: true,
+      lastAction: "read",
+      timestampMs: 1000,
     });
     const stateB: AgentFileState = makeState({
-      heat: 0.4, inContext: false, lastAction: "write", timestampMs: 2000,
+      heat: 0.4,
+      inContext: false,
+      lastAction: "write",
+      timestampMs: 2000,
     });
 
     const mapAB = new Map<string, AgentFileState>([
@@ -153,13 +150,22 @@ describe("deriveMergedView", () => {
 
   it("associativity: merge(merge(A, B), C) === merge(A, merge(B, C))", () => {
     const stateA: AgentFileState = makeState({
-      heat: 0.3, inContext: false, lastAction: "read", timestampMs: 100,
+      heat: 0.3,
+      inContext: false,
+      lastAction: "read",
+      timestampMs: 100,
     });
     const stateB: AgentFileState = makeState({
-      heat: 0.9, inContext: true, lastAction: "write", timestampMs: 200,
+      heat: 0.9,
+      inContext: true,
+      lastAction: "write",
+      timestampMs: 200,
     });
     const stateC: AgentFileState = makeState({
-      heat: 0.5, inContext: false, lastAction: "search", timestampMs: 150,
+      heat: 0.5,
+      inContext: false,
+      lastAction: "search",
+      timestampMs: 150,
     });
 
     // All three together — this is what the orchestrator actually computes
@@ -180,7 +186,10 @@ describe("deriveMergedView", () => {
 
   it("idempotency: merge(A, A) === A", () => {
     const stateA: AgentFileState = makeState({
-      heat: 0.7, inContext: true, lastAction: "write", timestampMs: 5000,
+      heat: 0.7,
+      inContext: true,
+      lastAction: "write",
+      timestampMs: 5000,
     });
 
     // Single agent
@@ -224,13 +233,13 @@ describe("applyAgentUpdate", () => {
     const node = createMergedNode(
       "/src/api.ts",
       "agent-a",
-      makeState({ heat: 0.5, inContext: false, lastAction: "read", timestampMs: 1000 })
+      makeState({ heat: 0.5, inContext: false, lastAction: "read", timestampMs: 1000 }),
     );
 
     applyAgentUpdate(
       node,
       "agent-b",
-      makeState({ heat: 1.0, inContext: true, lastAction: "write", timestampMs: 2000 })
+      makeState({ heat: 1.0, inContext: true, lastAction: "write", timestampMs: 2000 }),
     );
 
     assert.equal(node.agents.size, 2);
@@ -244,19 +253,15 @@ describe("applyAgentUpdate", () => {
     const node = createMergedNode(
       "/src/api.ts",
       "agent-a",
-      makeState({ heat: 1.0, lastAction: "write", timestampMs: 1000 })
+      makeState({ heat: 1.0, lastAction: "write", timestampMs: 1000 }),
     );
-    applyAgentUpdate(
-      node,
-      "agent-b",
-      makeState({ heat: 0.5, lastAction: "read", timestampMs: 500 })
-    );
+    applyAgentUpdate(node, "agent-b", makeState({ heat: 0.5, lastAction: "read", timestampMs: 500 }));
 
     // Now agent-a's heat decays and its action changes to "read"
     applyAgentUpdate(
       node,
       "agent-a",
-      makeState({ heat: 0.3, inContext: false, lastAction: "read", timestampMs: 1000 })
+      makeState({ heat: 0.3, inContext: false, lastAction: "read", timestampMs: 1000 }),
     );
 
     assert.equal(node.agents.size, 2);
@@ -276,12 +281,12 @@ describe("removeAgentFromNode", () => {
     const node = createMergedNode(
       "/src/api.ts",
       "agent-a",
-      makeState({ heat: 0.5, inContext: true, lastAction: "read", timestampMs: 1000 })
+      makeState({ heat: 0.5, inContext: true, lastAction: "read", timestampMs: 1000 }),
     );
     applyAgentUpdate(
       node,
       "agent-b",
-      makeState({ heat: 0.8, inContext: false, lastAction: "write", timestampMs: 2000 })
+      makeState({ heat: 0.8, inContext: false, lastAction: "write", timestampMs: 2000 }),
     );
 
     const kept = removeAgentFromNode(node, "agent-a");
@@ -294,11 +299,7 @@ describe("removeAgentFromNode", () => {
   });
 
   it("removes last agent — node should be deleted", () => {
-    const node = createMergedNode(
-      "/src/api.ts",
-      "agent-a",
-      makeState()
-    );
+    const node = createMergedNode("/src/api.ts", "agent-a", makeState());
 
     const kept = removeAgentFromNode(node, "agent-a");
     assert.equal(kept, false);
@@ -306,11 +307,7 @@ describe("removeAgentFromNode", () => {
   });
 
   it("removing non-existent agent is a no-op", () => {
-    const node = createMergedNode(
-      "/src/api.ts",
-      "agent-a",
-      makeState({ heat: 0.7 })
-    );
+    const node = createMergedNode("/src/api.ts", "agent-a", makeState({ heat: 0.7 }));
 
     const kept = removeAgentFromNode(node, "agent-z");
     assert.equal(kept, true);
@@ -329,38 +326,66 @@ describe("CRDT.md worked example", () => {
     const node = createMergedNode(
       "/src/api.ts",
       "opencode-a1b2c3",
-      makeState({ heat: 1.0, inContext: true, lastAction: "read", timestampMs: 1000 })
+      makeState({ heat: 1.0, inContext: true, lastAction: "read", timestampMs: 1000 }),
     );
     assert.equal(node.heat, 1.0);
     assert.equal(node.inContext, true);
     assert.equal(node.lastAction, "read");
 
     // t=1005ms: Agent B writes /src/api.ts
-    applyAgentUpdate(node, "claude-code-x9p4n7", makeState({
-      heat: 1.0, inContext: true, lastAction: "write", timestampMs: 1005,
-    }));
+    applyAgentUpdate(
+      node,
+      "claude-code-x9p4n7",
+      makeState({
+        heat: 1.0,
+        inContext: true,
+        lastAction: "write",
+        timestampMs: 1005,
+      }),
+    );
     assert.equal(node.heat, 1.0); // max(1.0, 1.0)
     assert.equal(node.inContext, true); // true || true
     assert.equal(node.lastAction, "write"); // LWW: 1005 > 1000
 
     // t=1100ms: Agent A's heat decays to 0.9
-    applyAgentUpdate(node, "opencode-a1b2c3", makeState({
-      heat: 0.9, inContext: true, lastAction: "read", timestampMs: 1000,
-    }));
+    applyAgentUpdate(
+      node,
+      "opencode-a1b2c3",
+      makeState({
+        heat: 0.9,
+        inContext: true,
+        lastAction: "read",
+        timestampMs: 1000,
+      }),
+    );
     assert.equal(node.heat, 1.0); // max(0.9, 1.0) — Agent B still hot
     assert.equal(node.inContext, true);
     assert.equal(node.lastAction, "write"); // LWW: Agent B ts=1005 > Agent A ts=1000
 
     // t=1200ms: Agent A's context evicts /src/api.ts
-    applyAgentUpdate(node, "opencode-a1b2c3", makeState({
-      heat: 0.85, inContext: false, lastAction: "read", timestampMs: 1000,
-    }));
+    applyAgentUpdate(
+      node,
+      "opencode-a1b2c3",
+      makeState({
+        heat: 0.85,
+        inContext: false,
+        lastAction: "read",
+        timestampMs: 1000,
+      }),
+    );
     assert.equal(node.inContext, true); // false || true — Agent B still has it
 
     // t=1300ms: Agent B also evicts /src/api.ts
-    applyAgentUpdate(node, "claude-code-x9p4n7", makeState({
-      heat: 0.9, inContext: false, lastAction: "write", timestampMs: 1005,
-    }));
+    applyAgentUpdate(
+      node,
+      "claude-code-x9p4n7",
+      makeState({
+        heat: 0.9,
+        inContext: false,
+        lastAction: "write",
+        timestampMs: 1005,
+      }),
+    );
     assert.equal(node.inContext, false); // false || false — now truly out
     assert.equal(node.heat, 0.9); // max(0.85, 0.9)
 

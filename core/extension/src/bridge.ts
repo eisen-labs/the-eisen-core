@@ -1,5 +1,5 @@
-import * as path from "path";
-import * as fs from "fs";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 /**
  * Resolve the path to the eisen-core binary.
@@ -21,12 +21,5 @@ export function getCorePath(extensionUri: { fsPath: string }): string {
   }
 
   // 2. Dev fallback: local cargo release build
-  return path.join(
-    extensionUri.fsPath,
-    "..",
-    "core",
-    "target",
-    "release",
-    binaryName,
-  );
+  return path.join(extensionUri.fsPath, "..", "core", "target", "release", binaryName);
 }

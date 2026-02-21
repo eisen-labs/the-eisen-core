@@ -10,8 +10,7 @@ export function pointInPolygon(x: number, y: number, polygon: Point[]): boolean 
     const yi = polygon[i].y;
     const xj = polygon[j].x;
     const yj = polygon[j].y;
-    const intersects = ((yi > y) !== (yj > y))
-      && (x < (xj - xi) * (y - yi) / ((yj - yi) || 1e-9) + xi);
+    const intersects = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi || 1e-9) + xi;
     if (intersects) inside = !inside;
   }
   return inside;
@@ -65,8 +64,7 @@ export function convexHull(points: Point[]): Point[] {
   }
   if (deduped.length <= 2) return deduped;
 
-  const cross = (o: Point, a: Point, b: Point) =>
-    (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const cross = (o: Point, a: Point, b: Point) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
 
   const lower: Point[] = [];
   for (const p of deduped) {
@@ -183,9 +181,7 @@ export function alignPolygon(next: Point[], previous: Point[]): Point[] {
   const forward = scoreOffset(next);
   const reversedInput = [...next].reverse();
   const reversed = scoreOffset(reversedInput);
-  const best = forward.score <= reversed.score
-    ? rotate(next, forward.offset)
-    : rotate(reversedInput, reversed.offset);
+  const best = forward.score <= reversed.score ? rotate(next, forward.offset) : rotate(reversedInput, reversed.offset);
   return best.map((p) => ({ x: p.x, y: p.y }));
 }
 

@@ -1,37 +1,37 @@
-import { ChildProcess, spawn as nodeSpawn, SpawnOptions } from "child_process";
-import { Readable, Writable } from "stream";
-import * as fs from "fs";
-import * as path from "path";
+import { type ChildProcess, spawn as nodeSpawn, type SpawnOptions } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { Readable, Writable } from "node:stream";
 import {
-  ClientSideConnection,
-  ndJsonStream,
+  type AvailableCommand,
   type Client,
-  type SessionNotification,
-  type RequestPermissionRequest,
-  type RequestPermissionResponse,
-  type ReadTextFileRequest,
-  type ReadTextFileResponse,
-  type WriteTextFileRequest,
-  type WriteTextFileResponse,
+  ClientSideConnection,
   type CreateTerminalRequest,
   type CreateTerminalResponse,
+  type InitializeResponse,
+  type KillTerminalCommandRequest,
+  type KillTerminalCommandResponse,
+  type NewSessionResponse,
+  ndJsonStream,
+  type PromptResponse,
+  type ReadTextFileRequest,
+  type ReadTextFileResponse,
+  type ReleaseTerminalRequest,
+  type ReleaseTerminalResponse,
+  type RequestPermissionRequest,
+  type RequestPermissionResponse,
+  type SessionModelState,
+  type SessionModeState,
+  type SessionNotification,
   type TerminalOutputRequest,
   type TerminalOutputResponse,
   type WaitForTerminalExitRequest,
   type WaitForTerminalExitResponse,
-  type KillTerminalCommandRequest,
-  type KillTerminalCommandResponse,
-  type ReleaseTerminalRequest,
-  type ReleaseTerminalResponse,
-  type InitializeResponse,
-  type NewSessionResponse,
-  type PromptResponse,
-  type SessionModeState,
-  type SessionModelState,
-  type AvailableCommand,
+  type WriteTextFileRequest,
+  type WriteTextFileResponse,
 } from "@agentclientprotocol/sdk";
-import { type AgentConfig, getDefaultAgent, isAgentAvailable } from "./agents";
 import { getCorePath } from "../bridge";
+import { type AgentConfig, getDefaultAgent, isAgentAvailable } from "./agents";
 
 export interface ContextChipData {
   filePath: string;
@@ -169,11 +169,7 @@ interface DirEntry {
  * Recursively enumerate files and directories, respecting exclusions.
  * Returns entries sorted by relative path.
  */
-async function walkDirectory(
-  dirPath: string,
-  rootPath: string,
-  maxFiles = 500,
-): Promise<DirEntry[]> {
+async function walkDirectory(dirPath: string, rootPath: string, maxFiles = 500): Promise<DirEntry[]> {
   const entries: DirEntry[] = [];
 
   async function walk(currentPath: string): Promise<void> {
@@ -235,10 +231,7 @@ function buildDirectoryTree(dirName: string, entries: DirEntry[]): string {
   return lines.join("\n");
 }
 
-async function readFileContent(
-  filePath: string,
-  range?: { startLine: number; endLine: number },
-): Promise<string> {
+async function readFileContent(filePath: string, range?: { startLine: number; endLine: number }): Promise<string> {
   const content = await fs.promises.readFile(filePath, "utf-8");
   if (range) {
     const lines = content.split("\n");
@@ -259,11 +252,7 @@ async function buildPromptBlocks(
     for (const chip of chips) {
       if (chip.isDirectory) {
         // Directory attachment: expand into tree + per-file blocks
-        const dirBlocks = await buildDirectoryBlocks(
-          chip.filePath,
-          chip.fileName,
-          supportsEmbeddedContext,
-        );
+        const dirBlocks = await buildDirectoryBlocks(chip.filePath, chip.fileName, supportsEmbeddedContext);
         blocks.push(...dirBlocks);
       } else if (chip.range) {
         // Line-range selection: ALWAYS embed content (agent can't read partial files)
@@ -337,10 +326,7 @@ async function buildDirectoryBlocks(
       try {
         const stat = await fs.promises.stat(entry.absolutePath);
         if (stat.size <= DIR_FILE_SIZE_LIMIT) {
-          const content = await fs.promises.readFile(
-            entry.absolutePath,
-            "utf-8",
-          );
+          const content = await fs.promises.readFile(entry.absolutePath, "utf-8");
           const contentBytes = Buffer.byteLength(content, "utf-8");
           if (totalEmbedded + contentBytes <= DIR_TOTAL_BUDGET) {
             totalEmbedded += contentBytes;
@@ -378,42 +364,20 @@ export interface SessionMetadata {
   commands: AvailableCommand[] | null;
 }
 
-export type ACPConnectionState =
-  | "disconnected"
-  | "connecting"
-  | "connected"
-  | "error";
+export type ACPConnectionState = "disconnected" | "connecting" | "connected" | "error";
 
 type StateChangeCallback = (state: ACPConnectionState) => void;
 type SessionUpdateCallback = (update: SessionNotification) => void;
 type StderrCallback = (data: string) => void;
-type ReadTextFileCallback = (
-  params: ReadTextFileRequest,
-) => Promise<ReadTextFileResponse>;
-type WriteTextFileCallback = (
-  params: WriteTextFileRequest,
-) => Promise<WriteTextFileResponse>;
-type CreateTerminalCallback = (
-  params: CreateTerminalRequest,
-) => Promise<CreateTerminalResponse>;
-type TerminalOutputCallback = (
-  params: TerminalOutputRequest,
-) => Promise<TerminalOutputResponse>;
-type WaitForTerminalExitCallback = (
-  params: WaitForTerminalExitRequest,
-) => Promise<WaitForTerminalExitResponse>;
-type KillTerminalCommandCallback = (
-  params: KillTerminalCommandRequest,
-) => Promise<KillTerminalCommandResponse>;
-type ReleaseTerminalCallback = (
-  params: ReleaseTerminalRequest,
-) => Promise<ReleaseTerminalResponse>;
+type ReadTextFileCallback = (params: ReadTextFileRequest) => Promise<ReadTextFileResponse>;
+type WriteTextFileCallback = (params: WriteTextFileRequest) => Promise<WriteTextFileResponse>;
+type CreateTerminalCallback = (params: CreateTerminalRequest) => Promise<CreateTerminalResponse>;
+type TerminalOutputCallback = (params: TerminalOutputRequest) => Promise<TerminalOutputResponse>;
+type WaitForTerminalExitCallback = (params: WaitForTerminalExitRequest) => Promise<WaitForTerminalExitResponse>;
+type KillTerminalCommandCallback = (params: KillTerminalCommandRequest) => Promise<KillTerminalCommandResponse>;
+type ReleaseTerminalCallback = (params: ReleaseTerminalRequest) => Promise<ReleaseTerminalResponse>;
 
-export type SpawnFunction = (
-  command: string,
-  args: string[],
-  options: SpawnOptions,
-) => ChildProcess;
+export type SpawnFunction = (command: string, args: string[], options: SpawnOptions) => ChildProcess;
 
 export interface ACPClientOptions {
   agentConfig?: AgentConfig;
@@ -566,7 +530,7 @@ export class ACPClient {
     let useEisenCore = false;
     if (corePath) {
       try {
-        const fs = require("fs");
+        const fs = require("node:fs");
         useEisenCore = fs.existsSync(corePath);
       } catch {
         useEisenCore = false;
@@ -610,9 +574,7 @@ export class ACPClient {
 
     if (!this.skipAvailabilityCheck && !isAgentAvailable(this.agentConfig.id)) {
       const { hasAnyAvailableAgent, getAgentsWithStatus } = require("./agents");
-      const availableAgents = getAgentsWithStatus().filter(
-        (a: any) => a.available,
-      );
+      const availableAgents = getAgentsWithStatus().filter((a: any) => a.available);
 
       if (!hasAnyAvailableAgent()) {
         throw new Error(
@@ -663,9 +625,7 @@ export class ACPClient {
           const portMatch = text.match(/eisen-core tcp port: (\d+)/);
           if (portMatch) {
             this._tcpPort = parseInt(portMatch[1], 10);
-            console.log(
-              `[ACP] eisen-core TCP port: ${this._tcpPort} (instanceId=${spawnedInstanceId})`,
-            );
+            console.log(`[ACP] eisen-core TCP port: ${this._tcpPort} (instanceId=${spawnedInstanceId})`);
             for (const resolve of this.tcpPortResolvers) {
               resolve(this._tcpPort);
             }
@@ -677,9 +637,7 @@ export class ACPClient {
         // when multiple agents produce heavy output simultaneously
         this.stderrThrottleBuffer += text;
         if (this.stderrThrottleBuffer.length > ACPClient.STDERR_BUFFER_MAX) {
-          this.stderrThrottleBuffer = this.stderrThrottleBuffer.slice(
-            -ACPClient.STDERR_BUFFER_MAX,
-          );
+          this.stderrThrottleBuffer = this.stderrThrottleBuffer.slice(-ACPClient.STDERR_BUFFER_MAX);
         }
         if (!this.stderrThrottleTimer) {
           this.stderrThrottleTimer = setTimeout(() => {
@@ -687,10 +645,7 @@ export class ACPClient {
             const buffered = this.stderrThrottleBuffer;
             this.stderrThrottleBuffer = "";
             if (buffered) {
-              console.error(
-                "[ACP stderr]",
-                buffered.length > 500 ? buffered.slice(-500) : buffered,
-              );
+              console.error("[ACP stderr]", buffered.length > 500 ? buffered.slice(-500) : buffered);
               this.stderrListeners.forEach((cb) => cb(buffered));
             }
           }, ACPClient.STDERR_THROTTLE_MS);
@@ -705,10 +660,7 @@ export class ACPClient {
       });
 
       proc.on("error", (error) => {
-        console.error(
-          `[ACP] Process error (instanceId=${spawnedInstanceId}):`,
-          error,
-        );
+        console.error(`[ACP] Process error (instanceId=${spawnedInstanceId}):`, error);
         // Only update state if this is still the active process
         if (this.process === proc) {
           this.setState("error");
@@ -745,12 +697,8 @@ export class ACPClient {
       );
 
       const client: Client = {
-        requestPermission: async (
-          params: RequestPermissionRequest,
-        ): Promise<RequestPermissionResponse> => {
-          const allowOption = params.options.find(
-            (opt) => opt.kind === "allow_once" || opt.kind === "allow_always",
-          );
+        requestPermission: async (params: RequestPermissionRequest): Promise<RequestPermissionResponse> => {
+          const allowOption = params.options.find((opt) => opt.kind === "allow_once" || opt.kind === "allow_always");
           if (allowOption) {
             return {
               outcome: { outcome: "selected", optionId: allowOption.optionId },
@@ -765,11 +713,8 @@ export class ACPClient {
               availableCommands: AvailableCommand[];
             };
             // Route commands to the correct session, or buffer if no session yet
-            const targetSessionId =
-              (params as any).sessionId ?? this.activeSessionId;
-            const session = targetSessionId
-              ? this.sessions.get(targetSessionId)
-              : null;
+            const targetSessionId = (params as any).sessionId ?? this.activeSessionId;
+            const session = targetSessionId ? this.sessions.get(targetSessionId) : null;
             if (session?.metadata) {
               session.metadata.commands = update.availableCommands;
             } else {
@@ -782,57 +727,43 @@ export class ACPClient {
             console.error("[ACP] Error in session update listener:", error);
           }
         },
-        readTextFile: async (
-          params: ReadTextFileRequest,
-        ): Promise<ReadTextFileResponse> => {
+        readTextFile: async (params: ReadTextFileRequest): Promise<ReadTextFileResponse> => {
           if (this.readTextFileHandler) {
             return this.readTextFileHandler(params);
           }
           throw new Error("No readTextFile handler registered");
         },
-        writeTextFile: async (
-          params: WriteTextFileRequest,
-        ): Promise<WriteTextFileResponse> => {
+        writeTextFile: async (params: WriteTextFileRequest): Promise<WriteTextFileResponse> => {
           if (this.writeTextFileHandler) {
             return this.writeTextFileHandler(params);
           }
           throw new Error("No writeTextFile handler registered");
         },
-        createTerminal: async (
-          params: CreateTerminalRequest,
-        ): Promise<CreateTerminalResponse> => {
+        createTerminal: async (params: CreateTerminalRequest): Promise<CreateTerminalResponse> => {
           if (this.createTerminalHandler) {
             return this.createTerminalHandler(params);
           }
           throw new Error("No createTerminal handler registered");
         },
-        terminalOutput: async (
-          params: TerminalOutputRequest,
-        ): Promise<TerminalOutputResponse> => {
+        terminalOutput: async (params: TerminalOutputRequest): Promise<TerminalOutputResponse> => {
           if (this.terminalOutputHandler) {
             return this.terminalOutputHandler(params);
           }
           throw new Error("No terminalOutput handler registered");
         },
-        waitForTerminalExit: async (
-          params: WaitForTerminalExitRequest,
-        ): Promise<WaitForTerminalExitResponse> => {
+        waitForTerminalExit: async (params: WaitForTerminalExitRequest): Promise<WaitForTerminalExitResponse> => {
           if (this.waitForTerminalExitHandler) {
             return this.waitForTerminalExitHandler(params);
           }
           throw new Error("No waitForTerminalExit handler registered");
         },
-        killTerminal: async (
-          params: KillTerminalCommandRequest,
-        ): Promise<KillTerminalCommandResponse> => {
+        killTerminal: async (params: KillTerminalCommandRequest): Promise<KillTerminalCommandResponse> => {
           if (this.killTerminalCommandHandler) {
             return this.killTerminalCommandHandler(params);
           }
           throw new Error("No killTerminal handler registered");
         },
-        releaseTerminal: async (
-          params: ReleaseTerminalRequest,
-        ): Promise<ReleaseTerminalResponse> => {
+        releaseTerminal: async (params: ReleaseTerminalRequest): Promise<ReleaseTerminalResponse> => {
           if (this.releaseTerminalHandler) {
             return this.releaseTerminalHandler(params);
           }
@@ -869,8 +800,7 @@ export class ACPClient {
 
       // Track agent's embedded context capability
       const capabilities = (initResponse as any).capabilities;
-      this.supportsEmbeddedContext =
-        capabilities?.promptCapabilities?.embeddedContext === true;
+      this.supportsEmbeddedContext = capabilities?.promptCapabilities?.embeddedContext === true;
 
       this.setState("connected");
       return initResponse;
@@ -956,21 +886,13 @@ export class ACPClient {
     }
   }
 
-  async sendMessage(
-    message: string,
-    contextChips?: ContextChipData[],
-    sessionId?: string,
-  ): Promise<PromptResponse> {
+  async sendMessage(message: string, contextChips?: ContextChipData[], sessionId?: string): Promise<PromptResponse> {
     const id = sessionId ?? this.activeSessionId;
     if (!this.connection || !id) {
       throw new Error("No active session");
     }
     try {
-      const prompt = await buildPromptBlocks(
-        message,
-        contextChips,
-        this.supportsEmbeddedContext,
-      );
+      const prompt = await buildPromptBlocks(message, contextChips, this.supportsEmbeddedContext);
       const response = await this.connection.prompt({
         sessionId: id,
         prompt: prompt as any,

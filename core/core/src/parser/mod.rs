@@ -6,5 +6,3 @@ pub mod walk;
 
 #[cfg(test)]
 mod tests;
-
-

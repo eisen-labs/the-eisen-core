@@ -97,14 +97,17 @@ impl ContextTracker {
     /// turn-accessed counter. If the file is new it is created.
     pub fn file_access(&mut self, path: &str, action: Action) {
         let ts = now_ms();
-        let node = self.files.entry(path.to_string()).or_insert_with(|| FileNode {
-            path: path.to_string(),
-            heat: 0.0,
-            in_context: false,
-            last_action: action,
-            turn_accessed: 0,
-            timestamp_ms: 0,
-        });
+        let node = self
+            .files
+            .entry(path.to_string())
+            .or_insert_with(|| FileNode {
+                path: path.to_string(),
+                heat: 0.0,
+                in_context: false,
+                last_action: action,
+                turn_accessed: 0,
+                timestamp_ms: 0,
+            });
 
         node.heat = 1.0;
         node.in_context = true;
@@ -139,8 +142,13 @@ impl ContextTracker {
             }
         }
 
-        self.pending_usage
-            .push(UsageMessage::new(&self.agent_id, &self.session_id, used, size, None));
+        self.pending_usage.push(UsageMessage::new(
+            &self.agent_id,
+            &self.session_id,
+            used,
+            size,
+            None,
+        ));
     }
 
     /// Drain any pending usage messages queued by `usage_update()`.
@@ -217,7 +225,13 @@ impl ContextTracker {
             return None;
         }
 
-        Some(Delta::new(&self.agent_id, &self.session_id, self.seq, updates, removed))
+        Some(Delta::new(
+            &self.agent_id,
+            &self.session_id,
+            self.seq,
+            updates,
+            removed,
+        ))
     }
 
     /// Return a full snapshot of the current state.
@@ -273,7 +287,11 @@ mod tests {
         ContextTracker::new(TrackerConfig::default())
     }
 
-    fn config_with(context_turns: u32, compaction_threshold: f32, decay_rate: f32) -> TrackerConfig {
+    fn config_with(
+        context_turns: u32,
+        compaction_threshold: f32,
+        decay_rate: f32,
+    ) -> TrackerConfig {
         TrackerConfig {
             context_turns,
             compaction_threshold,
@@ -407,11 +425,11 @@ mod tests {
         t.file_access("/a.rs", Action::Read); // re-access at turn 1
 
         t.end_turn(); // turn 2
-        // gap = 2 - 1 = 1, which is NOT > 1, so still in context
+                      // gap = 2 - 1 = 1, which is NOT > 1, so still in context
         assert!(t.files["/a.rs"].in_context);
 
         t.end_turn(); // turn 3
-        // gap = 3 - 1 = 2 > 1 — now exits
+                      // gap = 3 - 1 = 2 > 1 — now exits
         assert!(!t.files["/a.rs"].in_context);
     }
 

@@ -6,12 +6,7 @@ export interface WireFileNode {
   path: string;
   heat: number;
   in_context: boolean;
-  last_action:
-    | "read"
-    | "write"
-    | "search"
-    | "user_provided"
-    | "user_referenced";
+  last_action: "read" | "write" | "search" | "user_provided" | "user_referenced";
   turn_accessed: number;
   timestamp_ms: number;
 }
@@ -20,12 +15,7 @@ export interface WireNodeUpdate {
   path: string;
   heat: number;
   in_context: boolean;
-  last_action:
-    | "read"
-    | "write"
-    | "search"
-    | "user_provided"
-    | "user_referenced";
+  last_action: "read" | "write" | "search" | "user_provided" | "user_referenced";
   turn_accessed: number;
   timestamp_ms: number;
 }

@@ -1,13 +1,5 @@
-import {
-  createState,
-  applySnapshot,
-  applyDelta,
-  type State,
-  type Snapshot,
-  type Delta,
-  type AgentInfo,
-} from "./state";
 import { Renderer } from "./render";
+import { type AgentInfo, applyDelta, applySnapshot, createState, type Delta, type Snapshot, type State } from "./state";
 
 declare const acquireVsCodeApi: () => {
   postMessage: (msg: unknown) => void;
@@ -44,19 +36,13 @@ class Eisen {
       this.vscode?.postMessage({ type: "openFile", path: e.detail });
     }) as EventListener);
 
-    window.addEventListener("eisen:selectNode", ((
-      e: CustomEvent<string | null>,
-    ) => {
+    window.addEventListener("eisen:selectNode", ((e: CustomEvent<string | null>) => {
       const id = e.detail;
       this.selectedId = id == null || this.selectedId === id ? null : id;
       if (this.selectedId !== null) {
-        const path = id!.includes("::") ? id!.split("::")[0] : id!;
+        const path = id?.includes("::") ? id?.split("::")[0] : id!;
         const line = this.state.nodes.get(id!)?.lines?.start;
-        this.vscode?.postMessage(
-          line != null
-            ? { type: "openFile", path, line }
-            : { type: "openFile", path },
-        );
+        this.vscode?.postMessage(line != null ? { type: "openFile", path, line } : { type: "openFile", path });
       }
       this.rerender();
     }) as EventListener);
@@ -151,10 +137,7 @@ class Eisen {
     const header = document.createElement("div");
     header.className = "eisen-legend-header";
 
-    const chevron = document.createElementNS(
-      "http://www.w3.org/2000/svg",
-      "svg",
-    );
+    const chevron = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     chevron.setAttribute("viewBox", "0 0 10 10");
     chevron.setAttribute("class", "eisen-legend-chevron");
     chevron.innerHTML =
@@ -200,8 +183,7 @@ class Eisen {
     switch (msg.method) {
       case "init":
       case "snapshot":
-        if (msg.params != null)
-          applySnapshot(this.state, msg.params as Snapshot);
+        if (msg.params != null) applySnapshot(this.state, msg.params as Snapshot);
         break;
       case "delta":
         if (msg.params != null) applyDelta(this.state, msg.params as Delta);

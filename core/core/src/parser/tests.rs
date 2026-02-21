@@ -17,26 +17,11 @@ mod tests {
         let method = NodeKind::Method;
         let function = NodeKind::Function;
 
-        assert_eq!(
-            serde_json::to_string(&folder).unwrap(),
-            "\"folder\""
-        );
-        assert_eq!(
-            serde_json::to_string(&file).unwrap(),
-            "\"file\""
-        );
-        assert_eq!(
-            serde_json::to_string(&class).unwrap(),
-            "\"class\""
-        );
-        assert_eq!(
-            serde_json::to_string(&method).unwrap(),
-            "\"method\""
-        );
-        assert_eq!(
-            serde_json::to_string(&function).unwrap(),
-            "\"function\""
-        );
+        assert_eq!(serde_json::to_string(&folder).unwrap(), "\"folder\"");
+        assert_eq!(serde_json::to_string(&file).unwrap(), "\"file\"");
+        assert_eq!(serde_json::to_string(&class).unwrap(), "\"class\"");
+        assert_eq!(serde_json::to_string(&method).unwrap(), "\"method\"");
+        assert_eq!(serde_json::to_string(&function).unwrap(), "\"function\"");
     }
 
     #[test]
@@ -109,12 +94,7 @@ mod tests {
     #[test]
     fn test_symbol_tree_get_node() {
         let mut tree = SymbolTree::new();
-        let data = NodeData::new(
-            0,
-            "test".to_string(),
-            NodeKind::Folder,
-            "/test".to_string(),
-        );
+        let data = NodeData::new(0, "test".to_string(), NodeKind::Folder, "/test".to_string());
         let node_id = tree.add_node(None, data);
 
         let retrieved = tree.get_node(node_id).unwrap();
@@ -147,12 +127,7 @@ mod tests {
     #[test]
     fn test_symbol_tree_delete_node() {
         let mut tree = SymbolTree::new();
-        let data = NodeData::new(
-            0,
-            "test".to_string(),
-            NodeKind::Folder,
-            "/test".to_string(),
-        );
+        let data = NodeData::new(0, "test".to_string(), NodeKind::Folder, "/test".to_string());
         let node_id = tree.add_node(None, data);
 
         tree.delete_node(node_id).unwrap();
@@ -170,7 +145,12 @@ mod tests {
         let root_data = NodeData::new(0, "root".to_string(), NodeKind::Folder, "/root".to_string());
         let root_id = tree.add_node(None, root_data);
 
-        let child_data = NodeData::new(1, "child".to_string(), NodeKind::Folder, "/root/child".to_string());
+        let child_data = NodeData::new(
+            1,
+            "child".to_string(),
+            NodeKind::Folder,
+            "/root/child".to_string(),
+        );
         let child_id = tree.add_node(Some(root_id), child_data);
 
         let grandchild_data = NodeData::new(
@@ -392,7 +372,11 @@ class MyClass:
         assert!(tree.find_by_path(&src_path).is_some());
 
         // Verify main.py was included - use proper path joining
-        let main_path = root.join("src").join("main.py").to_string_lossy().to_string();
+        let main_path = root
+            .join("src")
+            .join("main.py")
+            .to_string_lossy()
+            .to_string();
         assert!(tree.find_by_path(&main_path).is_some());
     }
 
@@ -421,7 +405,11 @@ def helper():
         walker.walk_and_build(&mut tree).unwrap();
 
         // Find main.py - use proper path joining
-        let main_path = root.join("src").join("main.py").to_string_lossy().to_string();
+        let main_path = root
+            .join("src")
+            .join("main.py")
+            .to_string_lossy()
+            .to_string();
         let main_id = tree.find_by_path(&main_path).unwrap();
 
         // Check that file has children (parsed symbols)
@@ -462,13 +450,30 @@ def helper():
     fn test_serialization_nested_json() {
         let mut tree = SymbolTree::new();
 
-        let root_data = NodeData::new(0, "project".to_string(), NodeKind::Folder, "/project".to_string());
+        let root_data = NodeData::new(
+            0,
+            "project".to_string(),
+            NodeKind::Folder,
+            "/project".to_string(),
+        );
         let root_id = tree.add_node(None, root_data);
 
-        let file_data = NodeData::new(1, "main.py".to_string(), NodeKind::File("py".to_string()), "/project/main.py".to_string()).with_lines(1, 10);
+        let file_data = NodeData::new(
+            1,
+            "main.py".to_string(),
+            NodeKind::File("py".to_string()),
+            "/project/main.py".to_string(),
+        )
+        .with_lines(1, 10);
         let file_id = tree.add_node(Some(root_id), file_data);
 
-        let class_data = NodeData::new(2, "MyClass".to_string(), NodeKind::Class, "/project/main.py".to_string()).with_lines(2, 9);
+        let class_data = NodeData::new(
+            2,
+            "MyClass".to_string(),
+            NodeKind::Class,
+            "/project/main.py".to_string(),
+        )
+        .with_lines(2, 9);
         tree.add_node(Some(file_id), class_data);
 
         let json = tree.to_nested_json();
@@ -499,10 +504,20 @@ def helper():
     fn test_serialization_flat_json() {
         let mut tree = SymbolTree::new();
 
-        let root_data = NodeData::new(0, "project".to_string(), NodeKind::Folder, "/project".to_string());
+        let root_data = NodeData::new(
+            0,
+            "project".to_string(),
+            NodeKind::Folder,
+            "/project".to_string(),
+        );
         let root_id = tree.add_node(None, root_data);
 
-        let file_data = NodeData::new(1, "main.py".to_string(), NodeKind::File("py".to_string()), "/project/main.py".to_string());
+        let file_data = NodeData::new(
+            1,
+            "main.py".to_string(),
+            NodeKind::File("py".to_string()),
+            "/project/main.py".to_string(),
+        );
         tree.add_node(Some(root_id), file_data);
 
         let json = tree.to_flat_json();

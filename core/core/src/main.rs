@@ -241,8 +241,9 @@ async fn main() -> Result<()> {
                     if had_activity {
                         if idle_ticks >= IDLE_THRESHOLD {
                             // Resuming from idle — switch back to fast interval
-                            interval =
-                                tokio::time::interval(std::time::Duration::from_millis(ACTIVE_INTERVAL_MS));
+                            interval = tokio::time::interval(std::time::Duration::from_millis(
+                                ACTIVE_INTERVAL_MS,
+                            ));
                             debug!("tick loop resumed active interval (100ms)");
                         }
                         idle_ticks = 0;
@@ -250,8 +251,9 @@ async fn main() -> Result<()> {
                         idle_ticks = idle_ticks.saturating_add(1);
                         if idle_ticks == IDLE_THRESHOLD {
                             // Switch to slow interval
-                            interval =
-                                tokio::time::interval(std::time::Duration::from_millis(IDLE_INTERVAL_MS));
+                            interval = tokio::time::interval(std::time::Duration::from_millis(
+                                IDLE_INTERVAL_MS,
+                            ));
                             debug!("tick loop entering idle interval (500ms)");
                         }
                     }

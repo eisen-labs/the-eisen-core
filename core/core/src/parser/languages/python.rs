@@ -15,8 +15,12 @@ impl PythonParser {
         let mut parser = Parser::new();
         let language = tree_sitter_python::language();
         // This expect is safe: tree-sitter-python grammar is always valid
-        parser.set_language(language).expect("Failed to load Python grammar");
-        Self { parser: Mutex::new(parser) }
+        parser
+            .set_language(language)
+            .expect("Failed to load Python grammar");
+        Self {
+            parser: Mutex::new(parser),
+        }
     }
 
     fn node_start_line(&self, node: &tree_sitter::Node) -> u32 {
@@ -28,10 +32,17 @@ impl PythonParser {
     }
 
     fn extract_name(&self, node: &tree_sitter::Node, content: &str) -> Option<String> {
-        node.utf8_text(content.as_bytes()).ok().map(|s| s.to_string())
+        node.utf8_text(content.as_bytes())
+            .ok()
+            .map(|s| s.to_string())
     }
 
-    fn extract_calls_from_node(&self, node: tree_sitter::Node, content: &str, out: &mut Vec<String>) {
+    fn extract_calls_from_node(
+        &self,
+        node: tree_sitter::Node,
+        content: &str,
+        out: &mut Vec<String>,
+    ) {
         if node.kind() == "call" {
             if let Some(func_node) = node.child_by_field_name("function") {
                 if let Some(name) = self.extract_callee_name(&func_node, content) {
@@ -69,7 +80,7 @@ impl LanguageParser for PythonParser {
 
     fn parse_file(&self, content: &str, _path: &Path) -> Vec<Symbol> {
         let mut symbols = Vec::new();
-        
+
         // Lock the parser; if poisoned, return empty symbols
         let mut parser_guard = match self.parser.lock() {
             Ok(guard) => guard,
@@ -87,7 +98,10 @@ impl LanguageParser for PythonParser {
             match child.kind() {
                 "class_definition" => {
                     if let Some(name_node) = child.child_by_field_name("name") {
-                        let name = name_node.utf8_text(content.as_bytes()).unwrap_or("").to_string();
+                        let name = name_node
+                            .utf8_text(content.as_bytes())
+                            .unwrap_or("")
+                            .to_string();
                         symbols.push(Symbol {
                             name,
                             kind: NodeKind::Class,
@@ -100,7 +114,10 @@ impl LanguageParser for PythonParser {
                 }
                 "function_definition" => {
                     if let Some(name_node) = child.child_by_field_name("name") {
-                        let name = name_node.utf8_text(content.as_bytes()).unwrap_or("").to_string();
+                        let name = name_node
+                            .utf8_text(content.as_bytes())
+                            .unwrap_or("")
+                            .to_string();
                         let mut calls = Vec::new();
                         if let Some(body) = child.child_by_field_name("body") {
                             self.extract_calls_from_node(body, content, &mut calls);
@@ -133,15 +150,21 @@ impl LanguageParser for PythonParser {
                     if let Some(body) = child.child_by_field_name("body") {
                         for class_child in body.children(&mut class_cursor) {
                             if class_child.kind() == "function_definition" {
-                                if let Some(method_name_node) = class_child.child_by_field_name("name") {
+                                if let Some(method_name_node) =
+                                    class_child.child_by_field_name("name")
+                                {
                                     let method_name = method_name_node
                                         .utf8_text(content.as_bytes())
                                         .unwrap_or("")
                                         .to_string();
-                                    
+
                                     // Remove standalone function entry if exists
-                                    symbols.retain(|s| !(s.name == method_name && s.kind == NodeKind::Function && s.parent.is_none()));
-                                    
+                                    symbols.retain(|s| {
+                                        !(s.name == method_name
+                                            && s.kind == NodeKind::Function
+                                            && s.parent.is_none())
+                                    });
+
                                     let mut calls = Vec::new();
                                     if let Some(body) = class_child.child_by_field_name("body") {
                                         self.extract_calls_from_node(body, content, &mut calls);

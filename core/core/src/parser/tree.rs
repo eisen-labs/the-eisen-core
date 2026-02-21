@@ -91,13 +91,13 @@ impl SymbolTree {
                 return Some(node_id);
             }
         }
-        
+
         for child_id in self.get_children(node_id) {
             if let Some(found) = self.find_by_path_recursive(child_id, path) {
                 return Some(found);
             }
         }
-        
+
         None
     }
 

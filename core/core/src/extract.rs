@@ -49,7 +49,11 @@ pub fn extract_upstream(line: &str, tracker: &mut ContextTracker) {
     if v.get("method").is_none() {
         if let Some(id) = v.get("id").and_then(|i| i.as_u64()) {
             if tracker.take_pending_terminal_output(id) {
-                if let Some(output) = v.get("result").and_then(|r| r.get("output")).and_then(|o| o.as_str()) {
+                if let Some(output) = v
+                    .get("result")
+                    .and_then(|r| r.get("output"))
+                    .and_then(|o| o.as_str())
+                {
                     extract_paths_from_terminal_output(output, tracker);
                 }
             }
@@ -68,7 +72,10 @@ pub fn extract_upstream(line: &str, tracker: &mut ContextTracker) {
         if let Some(params) = v.get("params") {
             match serde_json::from_value::<PromptRequest>(params.clone()) {
                 Ok(req) => {
-                    debug!(prompt_blocks = req.prompt.len(), "extracting from session/prompt");
+                    debug!(
+                        prompt_blocks = req.prompt.len(),
+                        "extracting from session/prompt"
+                    );
                     extract_from_prompt(&req, tracker);
                 }
                 Err(e) => warn!(method, error = %e, "failed to deserialize PromptRequest"),
@@ -126,7 +133,8 @@ pub fn extract_downstream(line: &str, tracker: &mut ContextTracker) {
             match serde_json::from_value::<SessionNotification>(params.clone()) {
                 Ok(notif) => {
                     debug!(
-                        update_type = format!("{:?}", std::mem::discriminant(&notif.update)).as_str(),
+                        update_type =
+                            format!("{:?}", std::mem::discriminant(&notif.update)).as_str(),
                         "extracting from session/update"
                     );
                     extract_from_session_update(&notif.update, tracker);
@@ -182,13 +190,21 @@ fn extract_from_prompt(req: &PromptRequest, tracker: &mut ContextTracker) {
                     _ => continue, // future variants
                 };
                 if let Some(path) = uri_to_path(uri) {
-                    debug!(path = path.as_str(), action = "user_provided", "prompt: embedded resource");
+                    debug!(
+                        path = path.as_str(),
+                        action = "user_provided",
+                        "prompt: embedded resource"
+                    );
                     tracker.file_access(&path, Action::UserProvided);
                 }
             }
             ContentBlock::ResourceLink(link) => {
                 if let Some(path) = uri_to_path(&link.uri) {
-                    debug!(path = path.as_str(), action = "user_referenced", "prompt: resource link");
+                    debug!(
+                        path = path.as_str(),
+                        action = "user_referenced",
+                        "prompt: resource link"
+                    );
                     tracker.file_access(&path, Action::UserReferenced);
                 }
             }
@@ -226,7 +242,11 @@ fn extract_from_tool_call(tc: &ToolCall, tracker: &mut ContextTracker) {
     );
     for loc in &tc.locations {
         let path = loc.path.to_string_lossy().to_string();
-        debug!(path = path.as_str(), action = format!("{:?}", action).as_str(), "tool_call location");
+        debug!(
+            path = path.as_str(),
+            action = format!("{:?}", action).as_str(),
+            "tool_call location"
+        );
         tracker.file_access(&path, action);
     }
     extract_diff_paths(&tc.content, Action::Write, tracker);
@@ -264,7 +284,11 @@ fn extract_from_tool_call_update(tcu: &ToolCallUpdate, tracker: &mut ContextTrac
     if let Some(locations) = &tcu.fields.locations {
         for loc in locations {
             let path = loc.path.to_string_lossy().to_string();
-            debug!(path = path.as_str(), action = format!("{:?}", action).as_str(), "tool_call_update location");
+            debug!(
+                path = path.as_str(),
+                action = format!("{:?}", action).as_str(),
+                "tool_call_update location"
+            );
             tracker.file_access(&path, action);
         }
     }
@@ -279,11 +303,7 @@ fn extract_from_tool_call_update(tcu: &ToolCallUpdate, tracker: &mut ContextTrac
 /// Extract file paths from `ToolCallContent::Diff` blocks.
 ///
 /// Diffs always represent file modifications, so action is `Write`.
-fn extract_diff_paths(
-    content: &[ToolCallContent],
-    action: Action,
-    tracker: &mut ContextTracker,
-) {
+fn extract_diff_paths(content: &[ToolCallContent], action: Action, tracker: &mut ContextTracker) {
     for item in content {
         if let ToolCallContent::Diff(diff) = item {
             let path = diff.path.to_string_lossy().to_string();
@@ -298,10 +318,7 @@ fn extract_diff_paths(
 /// Search tools (grep, glob, find, etc.) return results as text where each
 /// line typically starts with an absolute file path. We extract these paths
 /// and track them as `Action::Search` so they appear in the context graph.
-fn extract_search_result_paths(
-    content: &[ToolCallContent],
-    tracker: &mut ContextTracker,
-) {
+fn extract_search_result_paths(content: &[ToolCallContent], tracker: &mut ContextTracker) {
     for item in content {
         let text = match item {
             ToolCallContent::Content(c) => match &c.content {
@@ -316,10 +333,7 @@ fn extract_search_result_paths(
                 continue;
             }
             if let Some(path) = extract_path_from_line(line) {
-                if std::path::Path::new(&path)
-                    .extension()
-                    .is_some()
-                {
+                if std::path::Path::new(&path).extension().is_some() {
                     debug!(path = path.as_str(), "search result file");
                     tracker.file_access(&path, Action::Search);
                 }
@@ -372,7 +386,9 @@ fn extract_redirect_target(cmd: &str) -> Option<String> {
         return None;
     };
     let token = after.split_whitespace().next()?;
-    if token.is_empty() { return None; }
+    if token.is_empty() {
+        return None;
+    }
     Some(token.to_string())
 }
 
@@ -462,7 +478,10 @@ mod tests {
         extract_downstream(line, &mut tracker);
         let snap = tracker.snapshot();
         assert!(snap.nodes.contains_key("/home/user/src/main.rs"));
-        assert_eq!(snap.nodes["/home/user/src/main.rs"].last_action, Action::Read);
+        assert_eq!(
+            snap.nodes["/home/user/src/main.rs"].last_action,
+            Action::Read
+        );
     }
 
     #[test]
@@ -472,7 +491,10 @@ mod tests {
         extract_downstream(line, &mut tracker);
         let snap = tracker.snapshot();
         assert!(snap.nodes.contains_key("/home/user/src/lib.rs"));
-        assert_eq!(snap.nodes["/home/user/src/lib.rs"].last_action, Action::Write);
+        assert_eq!(
+            snap.nodes["/home/user/src/lib.rs"].last_action,
+            Action::Write
+        );
     }
 
     #[test]
@@ -495,9 +517,18 @@ mod tests {
         assert!(snap.nodes.contains_key("/home/user/src/main.rs"));
         assert!(snap.nodes.contains_key("/home/user/src/lib.rs"));
         assert!(snap.nodes.contains_key("/home/user/src/utils.rs"));
-        assert_eq!(snap.nodes["/home/user/src/main.rs"].last_action, Action::Search);
-        assert_eq!(snap.nodes["/home/user/src/lib.rs"].last_action, Action::Search);
-        assert_eq!(snap.nodes["/home/user/src/utils.rs"].last_action, Action::Search);
+        assert_eq!(
+            snap.nodes["/home/user/src/main.rs"].last_action,
+            Action::Search
+        );
+        assert_eq!(
+            snap.nodes["/home/user/src/lib.rs"].last_action,
+            Action::Search
+        );
+        assert_eq!(
+            snap.nodes["/home/user/src/utils.rs"].last_action,
+            Action::Search
+        );
     }
 
     #[test]
@@ -508,7 +539,10 @@ mod tests {
         let snap = tracker.snapshot();
         assert!(snap.nodes.contains_key("/home/user/src/app.rs"));
         assert!(snap.nodes.contains_key("/home/user/src/db.rs"));
-        assert_eq!(snap.nodes["/home/user/src/app.rs"].last_action, Action::Search);
+        assert_eq!(
+            snap.nodes["/home/user/src/app.rs"].last_action,
+            Action::Search
+        );
     }
 
     #[test]
@@ -530,7 +564,10 @@ mod tests {
         extract_downstream(line, &mut tracker);
         let snap = tracker.snapshot();
         assert!(snap.nodes.contains_key("/home/user/src/db.rs"));
-        assert_eq!(snap.nodes["/home/user/src/db.rs"].last_action, Action::Write);
+        assert_eq!(
+            snap.nodes["/home/user/src/db.rs"].last_action,
+            Action::Write
+        );
     }
 
     #[test]
@@ -690,7 +727,10 @@ mod tests {
         extract_downstream(line, &mut tracker);
         let snap = tracker.snapshot();
         assert!(snap.nodes.contains_key("/home/user/src/app.rs"));
-        assert_eq!(snap.nodes["/home/user/src/app.rs"].last_action, Action::Write);
+        assert_eq!(
+            snap.nodes["/home/user/src/app.rs"].last_action,
+            Action::Write
+        );
     }
 
     #[test]
@@ -701,7 +741,10 @@ mod tests {
         extract_downstream(line, &mut tracker);
         let snap = tracker.snapshot();
         assert!(snap.nodes.contains_key("/home/user/src/lib.rs"));
-        assert_eq!(snap.nodes["/home/user/src/lib.rs"].last_action, Action::Write);
+        assert_eq!(
+            snap.nodes["/home/user/src/lib.rs"].last_action,
+            Action::Write
+        );
     }
 
     #[test]
@@ -734,7 +777,10 @@ mod tests {
 
     #[test]
     fn uri_to_path_file() {
-        assert_eq!(uri_to_path("file:///home/user/a.rs"), Some("/home/user/a.rs".to_string()));
+        assert_eq!(
+            uri_to_path("file:///home/user/a.rs"),
+            Some("/home/user/a.rs".to_string())
+        );
     }
 
     #[test]

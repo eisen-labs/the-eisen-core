@@ -39,9 +39,18 @@ pub async fn upstream_task(
     while reader.read_line(&mut line).await? > 0 {
         // Log the method (if JSON-RPC) for upstream messages
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
-            let method = v.get("method").and_then(|m| m.as_str()).unwrap_or("<response>");
+            let method = v
+                .get("method")
+                .and_then(|m| m.as_str())
+                .unwrap_or("<response>");
             let id = v.get("id").and_then(|i| i.as_u64());
-            debug!(direction = "upstream", method, id, bytes = line.len(), "editor -> agent");
+            debug!(
+                direction = "upstream",
+                method,
+                id,
+                bytes = line.len(),
+                "editor -> agent"
+            );
         }
         {
             let mut t = tracker.lock().await;
@@ -66,9 +75,18 @@ pub async fn downstream_task(
     while reader.read_line(&mut line).await? > 0 {
         // Log the method (if JSON-RPC) for downstream messages
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
-            let method = v.get("method").and_then(|m| m.as_str()).unwrap_or("<response>");
+            let method = v
+                .get("method")
+                .and_then(|m| m.as_str())
+                .unwrap_or("<response>");
             let id = v.get("id").and_then(|i| i.as_u64());
-            debug!(direction = "downstream", method, id, bytes = line.len(), "agent -> editor");
+            debug!(
+                direction = "downstream",
+                method,
+                id,
+                bytes = line.len(),
+                "agent -> editor"
+            );
         }
         {
             let mut t = tracker.lock().await;

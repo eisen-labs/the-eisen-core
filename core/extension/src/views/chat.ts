@@ -1,27 +1,27 @@
-import * as vscode from "vscode";
-import { spawn } from "child_process";
-import { marked } from "marked";
-import { ACPClient, type ContextChipData } from "../acp/client";
-import { getAgent, getAgentsWithStatus } from "../acp/agents";
-import { FileSearchService } from "../fileSearchService";
-import { AGENT_COLORS } from "../orchestrator";
+import { spawn } from "node:child_process";
 import type {
-  SessionNotification,
-  ReadTextFileRequest,
-  ReadTextFileResponse,
-  WriteTextFileRequest,
-  WriteTextFileResponse,
   CreateTerminalRequest,
   CreateTerminalResponse,
+  KillTerminalCommandRequest,
+  KillTerminalCommandResponse,
+  ReadTextFileRequest,
+  ReadTextFileResponse,
+  ReleaseTerminalRequest,
+  ReleaseTerminalResponse,
+  SessionNotification,
   TerminalOutputRequest,
   TerminalOutputResponse,
   WaitForTerminalExitRequest,
   WaitForTerminalExitResponse,
-  KillTerminalCommandRequest,
-  KillTerminalCommandResponse,
-  ReleaseTerminalRequest,
-  ReleaseTerminalResponse,
+  WriteTextFileRequest,
+  WriteTextFileResponse,
 } from "@agentclientprotocol/sdk";
+import { marked } from "marked";
+import * as vscode from "vscode";
+import { getAgent, getAgentsWithStatus } from "../acp/agents";
+import { ACPClient, type ContextChipData } from "../acp/client";
+import { FileSearchService } from "../fileSearchService";
+import { AGENT_COLORS } from "../orchestrator";
 
 marked.setOptions({ breaks: true, gfm: true });
 
@@ -136,9 +136,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private nextColorIndex = 0;
 
   private get activeInstance(): AgentInstance | undefined {
-    return this.currentInstanceKey
-      ? this.agentInstances.get(this.currentInstanceKey)
-      : undefined;
+    return this.currentInstanceKey ? this.agentInstances.get(this.currentInstanceKey) : undefined;
   }
 
   private get activeClient(): ACPClient | null {
@@ -205,9 +203,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const instId = client.instanceId;
         if (instId) {
           this.connectedInstanceIds.add(instId);
-          console.log(
-            `[Chat] Firing onDidConnect for instance "${instanceKey}" (instanceId=${instId})`,
-          );
+          console.log(`[Chat] Firing onDidConnect for instance "${instanceKey}" (instanceId=${instId})`);
         }
         this.onDidConnect?.(client);
         // Send updated instance list (connected status changed)
@@ -217,9 +213,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const instId = client.instanceId;
         if (instId && this.connectedInstanceIds.has(instId)) {
           this.connectedInstanceIds.delete(instId);
-          console.log(
-            `[Chat] Firing onDidDisconnect for instance "${instanceKey}" (instanceId=${instId})`,
-          );
+          console.log(`[Chat] Firing onDidDisconnect for instance "${instanceKey}" (instanceId=${instId})`);
           this.onDidDisconnect?.(instId);
         } else if (instId) {
           console.log(
@@ -278,17 +272,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return this.handleTerminalOutput(params);
     });
 
-    client.setOnWaitForTerminalExit(
-      async (params: WaitForTerminalExitRequest) => {
-        return this.handleWaitForTerminalExit(params);
-      },
-    );
+    client.setOnWaitForTerminalExit(async (params: WaitForTerminalExitRequest) => {
+      return this.handleWaitForTerminalExit(params);
+    });
 
-    client.setOnKillTerminalCommand(
-      async (params: KillTerminalCommandRequest) => {
-        return this.handleKillTerminalCommand(params);
-      },
-    );
+    client.setOnKillTerminalCommand(async (params: KillTerminalCommandRequest) => {
+      return this.handleKillTerminalCommand(params);
+    });
 
     client.setOnReleaseTerminal(async (params: ReleaseTerminalRequest) => {
       return this.handleReleaseTerminal(params);
@@ -326,14 +316,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.onDidReceiveMessage(async (message: WebviewMessage) => {
       switch (message.type) {
         case "sendMessage":
-          if (
-            message.text ||
-            (message.contextChips && message.contextChips.length > 0)
-          ) {
-            await this.handleUserMessage(
-              message.text || "",
-              message.contextChips,
-            );
+          if (message.text || (message.contextChips && message.contextChips.length > 0)) {
+            await this.handleUserMessage(message.text || "", message.contextChips);
           }
           break;
         case "fileSearch":
@@ -393,7 +377,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             await vscode.env.clipboard.writeText(message.text);
           }
           break;
-        case "ready":
+        case "ready": {
           // Send current connection state
           if (this.activeClient) {
             this.postMessage({
@@ -424,6 +408,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // Send session metadata
           this.sendSessionMetadata();
           break;
+        }
       }
     });
   }
@@ -473,8 +458,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const instance = this.createInstance(agentType);
       this.switchToInstance(instance.key);
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to spawn agent";
+      const message = error instanceof Error ? error.message : "Failed to spawn agent";
       this.postMessage({ type: "error", text: message });
     }
   }
@@ -552,12 +536,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.postMessage({ type: "triggerClearChat" });
   }
 
-  private handleStderr(text: string, instanceKey: string): void {
+  private handleStderr(_text: string, instanceKey: string): void {
     const inst = this.agentInstances.get(instanceKey);
     if (!inst) return;
-    const errorMatch = inst.stderrBuffer.match(
-      /(\w+Error):\s*(\w+)?\s*\n?\s*data:\s*\{([^}]+)\}/,
-    );
+    const errorMatch = inst.stderrBuffer.match(/(\w+Error):\s*(\w+)?\s*\n?\s*data:\s*\{([^}]+)\}/);
     if (errorMatch) {
       const errorType = errorMatch[1];
       const errorData = errorMatch[3];
@@ -577,14 +559,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async handleReadTextFile(
-    params: ReadTextFileRequest,
-  ): Promise<ReadTextFileResponse> {
+  private async handleReadTextFile(params: ReadTextFileRequest): Promise<ReadTextFileResponse> {
     try {
       const uri = vscode.Uri.file(params.path);
-      const openDoc = vscode.workspace.textDocuments.find(
-        (doc) => doc.uri.fsPath === uri.fsPath,
-      );
+      const openDoc = vscode.workspace.textDocuments.find((doc) => doc.uri.fsPath === uri.fsPath);
       let content: string;
       if (openDoc) {
         content = openDoc.getText();
@@ -605,9 +583,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async handleWriteTextFile(
-    params: WriteTextFileRequest,
-  ): Promise<WriteTextFileResponse> {
+  private async handleWriteTextFile(params: WriteTextFileRequest): Promise<WriteTextFileResponse> {
     try {
       const uri = vscode.Uri.file(params.path);
       const content = new TextEncoder().encode(params.content);
@@ -619,9 +595,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async handleCreateTerminal(
-    params: CreateTerminalRequest,
-  ): Promise<CreateTerminalResponse> {
+  private async handleCreateTerminal(params: CreateTerminalRequest): Promise<CreateTerminalResponse> {
     const terminalId = `term-${++this.terminalCounter}-${Date.now()}`;
     let exitResolve: () => void = () => {};
     const exitPromise = new Promise<void>((resolve) => {
@@ -641,10 +615,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     };
 
     const workspaceCwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    const cwd =
-      params.cwd && params.cwd.trim() !== ""
-        ? params.cwd
-        : workspaceCwd || process.env.HOME || process.cwd();
+    const cwd = params.cwd && params.cwd.trim() !== "" ? params.cwd : workspaceCwd || process.env.HOME || process.cwd();
 
     // Use shell only when no explicit args are provided (command may be a
     // shell expression like "echo foo && bar"). When args are present the
@@ -655,10 +626,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       cwd,
       env: {
         ...process.env,
-        ...(params.env?.reduce(
-          (acc, e) => ({ ...acc, [e.name]: e.value }),
-          {},
-        ) || {}),
+        ...(params.env?.reduce((acc, e) => ({ ...acc, [e.name]: e.value }), {}) || {}),
       },
       shell: useShell,
     });
@@ -679,7 +647,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       managedTerminal.exitResolve();
     });
 
-    proc.on("error", (err: Error) => {
+    proc.on("error", (_err: Error) => {
       managedTerminal.exitCode = 1;
       managedTerminal.exitResolve();
     });
@@ -702,9 +670,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async handleTerminalOutput(
-    params: TerminalOutputRequest,
-  ): Promise<TerminalOutputResponse> {
+  private async handleTerminalOutput(params: TerminalOutputRequest): Promise<TerminalOutputResponse> {
     const terminal = this.terminals.get(params.terminalId);
     if (!terminal) {
       throw new Error(`Terminal not found: ${params.terminalId}`);
@@ -723,9 +689,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     };
   }
 
-  private async handleWaitForTerminalExit(
-    params: WaitForTerminalExitRequest,
-  ): Promise<WaitForTerminalExitResponse> {
+  private async handleWaitForTerminalExit(params: WaitForTerminalExitRequest): Promise<WaitForTerminalExitResponse> {
     const terminal = this.terminals.get(params.terminalId);
     if (!terminal) {
       throw new Error(`Terminal not found: ${params.terminalId}`);
@@ -737,9 +701,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     };
   }
 
-  private async handleKillTerminalCommand(
-    params: KillTerminalCommandRequest,
-  ): Promise<KillTerminalCommandResponse> {
+  private async handleKillTerminalCommand(params: KillTerminalCommandRequest): Promise<KillTerminalCommandResponse> {
     const terminal = this.terminals.get(params.terminalId);
     if (!terminal) {
       throw new Error(`Terminal not found: ${params.terminalId}`);
@@ -753,9 +715,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return {};
   }
 
-  private async handleReleaseTerminal(
-    params: ReleaseTerminalRequest,
-  ): Promise<ReleaseTerminalResponse> {
+  private async handleReleaseTerminal(params: ReleaseTerminalRequest): Promise<ReleaseTerminalResponse> {
     const terminal = this.terminals.get(params.terminalId);
     if (!terminal) return {};
     if (terminal.proc && !terminal.proc.killed) {
@@ -808,9 +768,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         let terminalOutput: string | undefined;
         let terminalId: string | undefined;
         if (update.content && update.content.length > 0) {
-          const terminalContent = update.content.find(
-            (c: { type: string }) => c.type === "terminal",
-          );
+          const terminalContent = update.content.find((c: { type: string }) => c.type === "terminal");
           if (terminalContent && "terminalId" in terminalContent) {
             terminalId = String(terminalContent.terminalId);
             terminalOutput = `[Terminal: ${terminalId}]`;
@@ -896,14 +854,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       inst.isStreaming = true;
       this.postMessage({ type: "streamStart" });
 
-      const chipData: ContextChipData[] | undefined = contextChips?.map(
-        (c) => ({
-          filePath: c.filePath,
-          fileName: c.fileName,
-          isDirectory: c.isDirectory,
-          range: c.range,
-        }),
-      );
+      const chipData: ContextChipData[] | undefined = contextChips?.map((c) => ({
+        filePath: c.filePath,
+        fileName: c.fileName,
+        isDirectory: c.isDirectory,
+        range: c.range,
+      }));
       const response = await inst.client.sendMessage(text, chipData);
 
       inst.isStreaming = false;
@@ -924,8 +880,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       inst.streamingText = "";
     } catch (error) {
       inst.isStreaming = false;
-      const errorMessage =
-        error instanceof Error ? error.message : JSON.stringify(error);
+      const errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
       this.postMessage({ type: "error", text: `Error: ${errorMessage}` });
       this.postMessage({ type: "streamEnd", stopReason: "error", html: "" });
       inst.streamingText = "";
@@ -1016,9 +971,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private sendSessionMetadata(): void {
     const inst = this.activeInstance;
     if (!inst) return;
-    const metadata = inst.client.getSessionMetadata(
-      inst.acpSessionId ?? undefined,
-    );
+    const metadata = inst.client.getSessionMetadata(inst.acpSessionId ?? undefined);
     this.postMessage({
       type: "sessionMetadata",
       modes: metadata?.modes ?? null,
@@ -1038,12 +991,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const inst = this.activeInstance;
     if (!inst) return;
     const metadata = inst.client.getSessionMetadata();
-    const availableModes = Array.isArray(metadata?.modes?.availableModes)
-      ? metadata.modes.availableModes
-      : [];
-    const availableModels = Array.isArray(metadata?.models?.availableModels)
-      ? metadata.models.availableModels
-      : [];
+    const availableModes = Array.isArray(metadata?.modes?.availableModes) ? metadata.modes.availableModes : [];
+    const availableModels = Array.isArray(metadata?.models?.availableModels) ? metadata.models.availableModels : [];
 
     const modeKey = `${SELECTED_MODE_KEY}.${inst.agentType}`;
     const modelKey = `${SELECTED_MODEL_KEY}.${inst.agentType}`;
@@ -1058,10 +1007,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       modeRestored = true;
     }
 
-    if (
-      savedModelId &&
-      availableModels.some((m: any) => m?.modelId === savedModelId)
-    ) {
+    if (savedModelId && availableModels.some((m: any) => m?.modelId === savedModelId)) {
       await inst.client.setModel(savedModelId);
       modelRestored = true;
     }
@@ -1087,18 +1033,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private getHtmlContent(webview: vscode.Webview): string {
-    const styleResetUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.extensionUri, "media", "reset.css"),
-    );
-    const styleVSCodeUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.extensionUri, "media", "vscode.css"),
-    );
-    const styleMainUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.extensionUri, "media", "main.css"),
-    );
-    const webviewScriptUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.extensionUri, "dist", "chatWebview.js"),
-    );
+    const styleResetUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "media", "reset.css"));
+    const styleVSCodeUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "media", "vscode.css"));
+    const styleMainUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "media", "main.css"));
+    const webviewScriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "dist", "chatWebview.js"));
 
     return `<!DOCTYPE html>
 <html lang="en">

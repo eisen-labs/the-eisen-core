@@ -1,8 +1,8 @@
 import * as vscode from "vscode";
+import { ensureAgentStatusLoaded } from "./acp/agents";
+import { EisenOrchestrator } from "./orchestrator";
 import { ChatViewProvider } from "./views/chat";
 import { GraphViewProvider } from "./views/graph";
-import { EisenOrchestrator } from "./orchestrator";
-import { ensureAgentStatusLoaded } from "./acp/agents";
 
 let chatProvider: ChatViewProvider | undefined;
 let graphProvider: GraphViewProvider | undefined;
@@ -13,19 +13,14 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Kick off async agent availability detection early (non-blocking).
   // This replaces the previous execSync-based blocking probe.
-  ensureAgentStatusLoaded().catch((e) =>
-    console.warn("[Eisen] Failed to probe agent availability:", e),
-  );
+  ensureAgentStatusLoaded().catch((e) => console.warn("[Eisen] Failed to probe agent availability:", e));
 
   // Create the orchestrator — aggregates N eisen-core TCP streams
   orchestrator = new EisenOrchestrator();
 
   // Create view providers
   graphProvider = new GraphViewProvider(context.extensionUri);
-  chatProvider = new ChatViewProvider(
-    context.extensionUri,
-    context.globalState,
-  );
+  chatProvider = new ChatViewProvider(context.extensionUri, context.globalState);
 
   // Wire: orchestrator -> graph
   orchestrator.onMergedSnapshot = (snapshot) => {
@@ -49,36 +44,25 @@ export function activate(context: vscode.ExtensionContext) {
       const port = await client.waitForTcpPort();
       const instanceId = client.instanceId;
 
-      console.log(
-        `[Eisen] TCP port resolved: port=${port}, instanceId=${instanceId}, agentType=${agentType}`,
-      );
+      console.log(`[Eisen] TCP port resolved: port=${port}, instanceId=${instanceId}, agentType=${agentType}`);
       if (instanceId && agentType) {
         orchestrator?.addAgent(instanceId, port, agentType);
         console.log(
           `[Eisen] Registered agent with orchestrator: ${instanceId} on port ${port} (total agents: ${orchestrator?.agentCount})`,
         );
       } else {
-        console.warn(
-          `[Eisen] Cannot register agent — missing instanceId=${instanceId} or agentType=${agentType}`,
-        );
+        console.warn(`[Eisen] Cannot register agent — missing instanceId=${instanceId} or agentType=${agentType}`);
       }
     } catch (e) {
-      console.error(
-        `[Eisen] Failed to register agent "${agentType}" with orchestrator:`,
-        e,
-      );
+      console.error(`[Eisen] Failed to register agent "${agentType}" with orchestrator:`, e);
     }
   };
 
   // When any agent disconnects, remove it from the orchestrator
   chatProvider.onDidDisconnect = (instanceId) => {
-    console.log(
-      `[Eisen] onDidDisconnect fired for instanceId=${instanceId}, removing from orchestrator`,
-    );
+    console.log(`[Eisen] onDidDisconnect fired for instanceId=${instanceId}, removing from orchestrator`);
     orchestrator?.removeAgent(instanceId);
-    console.log(
-      `[Eisen] Agent removed, remaining agents: ${orchestrator?.agentCount}`,
-    );
+    console.log(`[Eisen] Agent removed, remaining agents: ${orchestrator?.agentCount}`);
   };
 
   // When the active agent changes, register the new one if not already known
@@ -93,9 +77,7 @@ export function activate(context: vscode.ExtensionContext) {
     if (client.isConnected() && client.tcpPort !== null) {
       const instanceId = client.instanceId;
       if (instanceId && agentType) {
-        console.log(
-          `[Extension] Re-registering already-connected agent: ${instanceId} on port ${client.tcpPort}`,
-        );
+        console.log(`[Extension] Re-registering already-connected agent: ${instanceId} on port ${client.tcpPort}`);
         orchestrator?.addAgent(instanceId, client.tcpPort, agentType);
       }
     }
@@ -112,19 +94,15 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register both webview views in the eisen container
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(
-      GraphViewProvider.viewType,
-      graphProvider,
-      { webviewOptions: { retainContextWhenHidden: true } },
-    ),
+    vscode.window.registerWebviewViewProvider(GraphViewProvider.viewType, graphProvider, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
   );
 
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(
-      ChatViewProvider.viewType,
-      chatProvider,
-      { webviewOptions: { retainContextWhenHidden: true } },
-    ),
+    vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatProvider, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
   );
 
   // Commands
@@ -167,26 +145,23 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
-    vscode.commands.registerTextEditorCommand(
-      "eisen.sendSelectionToChat",
-      (editor: vscode.TextEditor) => {
-        const selection = editor.selection;
-        const document = editor.document;
-        const chip = {
-          id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-          filePath: document.uri.fsPath,
-          fileName: require("path").basename(document.uri.fsPath),
-          languageId: document.languageId,
-          range: selection.isEmpty
-            ? undefined
-            : {
-                startLine: selection.start.line + 1,
-                endLine: selection.end.line + 1,
-              },
-        };
-        chatProvider?.postChipToWebview(chip);
-      },
-    ),
+    vscode.commands.registerTextEditorCommand("eisen.sendSelectionToChat", (editor: vscode.TextEditor) => {
+      const selection = editor.selection;
+      const document = editor.document;
+      const chip = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        filePath: document.uri.fsPath,
+        fileName: require("node:path").basename(document.uri.fsPath),
+        languageId: document.languageId,
+        range: selection.isEmpty
+          ? undefined
+          : {
+              startLine: selection.start.line + 1,
+              endLine: selection.end.line + 1,
+            },
+      };
+      chatProvider?.postChipToWebview(chip);
+    }),
   );
 
   // Cleanup on deactivate

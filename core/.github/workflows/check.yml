@@ -1,0 +1,46 @@
+name: Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - name: Install dependencies
+        run: |
+          pnpm install
+          pnpm -C ui install
+          pnpm -C extension install
+      - name: Biome check
+        run: pnpm exec biome check ui/src extension/src
+      - name: Typecheck UI
+        run: pnpm -C ui exec tsc --noEmit -p tsconfig.json
+      - name: Typecheck Extension
+        run: pnpm -C extension exec tsc --noEmit -p tsconfig.json
+
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core -> target
+      - name: Rustfmt
+        run: cargo fmt --manifest-path core/Cargo.toml --check
+      - name: Clippy
+        run: cargo clippy --manifest-path core/Cargo.toml -- -D warnings
+      - name: Test
+        run: cargo test --manifest-path core/Cargo.toml

@@ -1,12 +1,8 @@
+import { execFile } from "node:child_process";
+import * as path from "node:path";
 import * as vscode from "vscode";
-import { execFile } from "child_process";
-import * as path from "path";
 import { getCorePath } from "../bridge";
-import type {
-  AgentInfo,
-  MergedGraphDelta,
-  MergedGraphSnapshot,
-} from "../orchestrator";
+import type { AgentInfo, MergedGraphDelta, MergedGraphSnapshot } from "../orchestrator";
 
 type UiNodeKind = "file" | "class" | "method" | "function";
 
@@ -67,9 +63,7 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
    */
   setSnapshot(snapshot: MergedGraphSnapshot): void {
     // Build the combined node map: baseline + live merged data
-    const nodes: Record<string, UiNode> = this.baselineNodes
-      ? { ...this.baselineNodes }
-      : {};
+    const nodes: Record<string, UiNode> = this.baselineNodes ? { ...this.baselineNodes } : {};
 
     for (const [id, node] of Object.entries(snapshot.nodes)) {
       const normalizedId = this.normalizeNodeId(id);
@@ -218,16 +212,11 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    this.panel = vscode.window.createWebviewPanel(
-      "eisen.graphPanel",
-      "Eisen Graph",
-      vscode.ViewColumn.Beside,
-      {
-        enableScripts: true,
-        retainContextWhenHidden: true,
-        localResourceRoots: [this.extensionUri],
-      },
-    );
+    this.panel = vscode.window.createWebviewPanel("eisen.graphPanel", "Eisen Graph", vscode.ViewColumn.Beside, {
+      enableScripts: true,
+      retainContextWhenHidden: true,
+      localResourceRoots: [this.extensionUri],
+    });
 
     this.setupWebview(this.panel.webview);
     this.flushPendingMessages();
@@ -316,9 +305,7 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
           },
         });
       })
-      .catch((err) =>
-        console.error("[Graph] Background baseline parse failed:", err),
-      )
+      .catch((err) => console.error("[Graph] Background baseline parse failed:", err))
       .finally(() => {
         if (gen === this.baselineGeneration) this.baselineLoading = null;
       });
@@ -330,19 +317,14 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
   } | null> {
     const corePath = getCorePath(this.extensionUri);
     const stdout = await new Promise<string>((resolve, reject) => {
-      execFile(
-        corePath,
-        ["snapshot", "--root", root],
-        { cwd: root, maxBuffer: 32 * 1024 * 1024 },
-        (error, out) => {
-          if (error) {
-            console.error("[Graph] eisen-core snapshot failed:", error.message);
-            reject(error);
-            return;
-          }
-          resolve(out);
-        },
-      );
+      execFile(corePath, ["snapshot", "--root", root], { cwd: root, maxBuffer: 32 * 1024 * 1024 }, (error, out) => {
+        if (error) {
+          console.error("[Graph] eisen-core snapshot failed:", error.message);
+          reject(error);
+          return;
+        }
+        resolve(out);
+      });
     }).catch(() => "");
 
     if (!stdout) return null;
@@ -362,10 +344,7 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
       const id = this.normalizeNodeId(rawId);
       if (!id || this.shouldIgnorePath(id)) continue;
       nodes[id] = {
-        kind:
-          typeof rawNode?.kind === "string"
-            ? (rawNode.kind as UiNodeKind)
-            : undefined,
+        kind: typeof rawNode?.kind === "string" ? (rawNode.kind as UiNodeKind) : undefined,
         lines:
           rawNode?.lines && typeof rawNode.lines === "object"
             ? {
@@ -381,13 +360,7 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
       for (const edge of parsed.calls) {
         const from = this.normalizeNodeId(String(edge?.from ?? ""));
         const to = this.normalizeNodeId(String(edge?.to ?? ""));
-        if (
-          !from ||
-          !to ||
-          this.shouldIgnorePath(from) ||
-          this.shouldIgnorePath(to)
-        )
-          continue;
+        if (!from || !to || this.shouldIgnorePath(from) || this.shouldIgnorePath(to)) continue;
         if (!nodes[from] || !nodes[to]) continue;
         calls.push({ from, to });
       }
@@ -404,9 +377,7 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
     const [filePart, ...symbolParts] = rawId.split("::");
     const file = this.toWorkspaceRelative(filePart);
     if (!file || file.startsWith("..")) return "";
-    return symbolParts.length === 0
-      ? file
-      : `${file}::${symbolParts.join("::")}`;
+    return symbolParts.length === 0 ? file : `${file}::${symbolParts.join("::")}`;
   }
 
   private toWorkspaceRelative(filePath: string): string {
@@ -414,22 +385,13 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
     if (!this.workspaceRoot || !path.isAbsolute(filePath)) {
       return normalized.replace(/^\.\//, "");
     }
-    const relative = path
-      .relative(this.workspaceRoot, filePath)
-      .replaceAll(path.sep, "/");
+    const relative = path.relative(this.workspaceRoot, filePath).replaceAll(path.sep, "/");
     return relative.replace(/^\.\//, "");
   }
 
   private shouldIgnorePath(filePath: string): boolean {
-    const id = filePath.includes("::")
-      ? filePath.slice(0, filePath.indexOf("::"))
-      : filePath;
-    return (
-      id === ".gitignore" ||
-      id.endsWith("/.gitignore") ||
-      id === ".DS_Store" ||
-      id.endsWith("/.DS_Store")
-    );
+    const id = filePath.includes("::") ? filePath.slice(0, filePath.indexOf("::")) : filePath;
+    return id === ".gitignore" || id.endsWith("/.gitignore") || id === ".DS_Store" || id.endsWith("/.DS_Store");
   }
 
   // -----------------------------------------------------------------------
@@ -441,29 +403,18 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
     if (this.hasWebviewTarget()) {
       this.sendToTargets(msg);
     } else {
-      console.log(
-        `[Graph] View not ready, queuing ${msg.method} message (${this.pendingMessages.length + 1} pending)`,
-      );
+      console.log(`[Graph] View not ready, queuing ${msg.method} message (${this.pendingMessages.length + 1} pending)`);
       this.pendingMessages.push(msg);
     }
   }
 
-  private handleWebviewMessage(msg: {
-    type: string;
-    path?: string;
-    line?: number;
-  }) {
-    console.log(
-      `[Graph] <- webview message: type=${msg.type}${msg.path ? `, path=${msg.path}` : ""}`,
-    );
+  private handleWebviewMessage(msg: { type: string; path?: string; line?: number }) {
+    console.log(`[Graph] <- webview message: type=${msg.type}${msg.path ? `, path=${msg.path}` : ""}`);
     switch (msg.type) {
       case "openFile":
         if (msg.path) {
-          const workspaceRoot =
-            vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-          const fullPath = workspaceRoot
-            ? path.join(workspaceRoot, msg.path)
-            : msg.path;
+          const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+          const fullPath = workspaceRoot ? path.join(workspaceRoot, msg.path) : msg.path;
           const line = msg.line != null ? Math.max(0, msg.line - 1) : 0;
           vscode.workspace.openTextDocument(fullPath).then(
             (doc) => {
@@ -501,12 +452,8 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
   // -----------------------------------------------------------------------
 
   private getHtml(webview: vscode.Webview): string {
-    const scriptUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.extensionUri, "media", "graph.js"),
-    );
-    const styleUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.extensionUri, "media", "graph.css"),
-    );
+    const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "media", "graph.js"));
+    const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "media", "graph.css"));
 
     return `<!DOCTYPE html>
 <html lang="en">

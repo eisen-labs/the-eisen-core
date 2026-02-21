@@ -1,6 +1,5 @@
 :root {
-  --eisen-border: 1px solid
-    var(--vscode-panel-border, rgba(127, 127, 127, 0.45));
+  --eisen-border: 1px solid var(--vscode-panel-border, rgba(127, 127, 127, 0.45));
   --eisen-control-height: 28px;
   --eisen-radius: 6px;
   --eisen-pad-x: 10px;
@@ -70,8 +69,7 @@ body {
   height: 36px;
   min-height: 36px;
   cursor: pointer;
-  border-left: 3px solid
-    color-mix(in srgb, var(--tab-color, #888) 40%, transparent);
+  border-left: 3px solid color-mix(in srgb, var(--tab-color, #888) 40%, transparent);
   transition:
     background 0.1s ease,
     border-color 0.1s ease;
@@ -84,11 +82,7 @@ body {
 
 .instance-tab.active {
   background: var(--vscode-list-activeSelectionBackground);
-  border-left-color: color-mix(
-    in srgb,
-    var(--tab-color, #888) 70%,
-    transparent
-  );
+  border-left-color: color-mix(in srgb, var(--tab-color, #888) 70%, transparent);
 }
 
 .tab-status {

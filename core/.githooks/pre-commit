@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set +e
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+failed=0
+
+step() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
+fail() { printf '\033[1;31m  FAIL:\033[0m %s\n' "$*"; failed=1; }
+
+step "Biome"
+pnpm exec biome check ui/src extension/src || fail "biome"
+
+step "Typecheck"
+pnpm -C ui exec tsc --noEmit || fail "tsc ui"
+pnpm -C extension exec tsc --noEmit || fail "tsc extension"
+
+step "Rustfmt"
+cargo fmt --manifest-path core/Cargo.toml --check || fail "rustfmt"
+
+step "Clippy"
+cargo clippy --manifest-path core/Cargo.toml -- -D warnings 2>&1 || fail "clippy"
+
+if [ "$failed" -ne 0 ]; then
+  printf '\n\033[1;31mPre-commit checks failed.\033[0m\n'
+  exit 1
+fi
+
+printf '\n\033[1;32mAll checks passed.\033[0m\n'

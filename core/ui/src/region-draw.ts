@@ -1,4 +1,4 @@
-import { polygonArea, polygonCentroid, type Point } from './region-geometry';
+import { type Point, polygonArea, polygonCentroid } from "./region-geometry";
 
 export interface RegionLabelOptions {
   points: Point[];
@@ -63,8 +63,8 @@ export function drawRegionLabel(ctx: CanvasRenderingContext2D, options: RegionLa
   ctx.save();
   ctx.globalAlpha = alpha * titleAlpha;
   drawLabelBubble(ctx, boxX, boxY, boxW, boxH, labelBg);
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
   ctx.fillStyle = labelFg;
   ctx.fillText(label, center.x, center.y);
   ctx.restore();

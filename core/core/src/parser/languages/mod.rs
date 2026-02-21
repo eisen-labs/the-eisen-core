@@ -1,6 +1,6 @@
 pub mod python;
-pub mod typescript;
 pub mod rust;
+pub mod typescript;
 
 use std::path::Path;
 

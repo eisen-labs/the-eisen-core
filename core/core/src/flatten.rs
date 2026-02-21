@@ -156,8 +156,12 @@ fn ui_kind(kind: &NodeKind) -> &str {
     match kind {
         NodeKind::Folder => "folder",
         NodeKind::File(_) => "file",
-        NodeKind::Class | NodeKind::Struct | NodeKind::Trait
-        | NodeKind::Interface | NodeKind::Enum | NodeKind::Impl => "class",
+        NodeKind::Class
+        | NodeKind::Struct
+        | NodeKind::Trait
+        | NodeKind::Interface
+        | NodeKind::Enum
+        | NodeKind::Impl => "class",
         NodeKind::Method => "method",
         NodeKind::Function | NodeKind::Const | NodeKind::Type | NodeKind::Mod => "function",
     }

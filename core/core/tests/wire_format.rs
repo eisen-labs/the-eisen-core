@@ -140,9 +140,15 @@ async fn snapshot_wire_format() {
     assert_eq!(node["path"], "/home/user/src/auth.ts");
     assert!(node["heat"].is_f64(), "heat must be a number");
     let heat = node["heat"].as_f64().unwrap();
-    assert!((0.0..=1.0).contains(&heat), "heat must be 0.0-1.0, got {heat}");
+    assert!(
+        (0.0..=1.0).contains(&heat),
+        "heat must be 0.0-1.0, got {heat}"
+    );
     assert!(node["in_context"].is_boolean(), "in_context must be bool");
-    assert!(node["last_action"].is_string(), "last_action must be string");
+    assert!(
+        node["last_action"].is_string(),
+        "last_action must be string"
+    );
     assert!(node["turn_accessed"].is_u64(), "turn_accessed must be u64");
 
     // Verify both nodes present
@@ -242,7 +248,10 @@ async fn request_snapshot_round_trip() {
     }
 
     assert_eq!(snap2["type"], "snapshot");
-    assert!(snap2["nodes"]["/x.rs"].is_object(), "new file should be in snapshot");
+    assert!(
+        snap2["nodes"]["/x.rs"].is_object(),
+        "new file should be in snapshot"
+    );
 }
 
 /// Validate seq numbers are monotonically increasing across deltas.
@@ -274,7 +283,7 @@ async fn seq_monotonic_across_deltas() {
 async fn removed_files_in_delta() {
     // Use aggressive decay so files prune quickly
     let config = TrackerConfig {
-        context_turns: 0,  // exit context immediately on end_turn
+        context_turns: 0, // exit context immediately on end_turn
         compaction_threshold: 0.5,
         decay_rate: 0.001, // heat drops below 0.01 in one tick
     };
@@ -294,10 +303,7 @@ async fn removed_files_in_delta() {
         let msg = client.read_msg().await;
         if msg["type"] == "delta" {
             if let Some(removed) = msg["removed"].as_array() {
-                if removed
-                    .iter()
-                    .any(|v| v.as_str() == Some("/ephemeral.rs"))
-                {
+                if removed.iter().any(|v| v.as_str() == Some("/ephemeral.rs")) {
                     found_removed = true;
                     break;
                 }
@@ -316,7 +322,10 @@ async fn removed_files_in_delta() {
             }
         }
     }
-    assert!(found_removed, "file should appear in delta.removed after decay");
+    assert!(
+        found_removed,
+        "file should appear in delta.removed after decay"
+    );
 }
 
 /// Validate usage messages are broadcast via the tick loop (not just direct broadcast).
@@ -360,7 +369,10 @@ async fn usage_message_wire_format() {
     assert_eq!(msg["used"], 45_000);
     assert_eq!(msg["size"], 200_000);
     // cost should be absent (null/missing) when None
-    assert!(msg["cost"].is_null(), "cost should be null when not provided");
+    assert!(
+        msg["cost"].is_null(),
+        "cost should be null when not provided"
+    );
 }
 
 /// Validate usage message with cost field.

@@ -1,4 +1,6 @@
-import * as net from "net";
+import * as net from "node:net";
+import { applyAgentUpdate, createMergedNode, removeAgentFromNode } from "./merge";
+import { type AgentProcessor, getProcessor } from "./processor";
 import type {
   AgentFileState,
   AgentInfo,
@@ -7,16 +9,9 @@ import type {
   MergedGraphDeltaUpdate,
   MergedGraphNode,
   MergedGraphSnapshot,
-  NormalizedAction,
   WireMessage,
 } from "./types";
-import { AGENT_COLORS, normalizeAction } from "./types";
-import { getProcessor, type AgentProcessor } from "./processor";
-import {
-  applyAgentUpdate,
-  createMergedNode,
-  removeAgentFromNode,
-} from "./merge";
+import { AGENT_COLORS } from "./types";
 
 // ---------------------------------------------------------------------------
 // Internal agent connection state
@@ -77,9 +72,7 @@ export class EisenOrchestrator {
    */
   addAgent(instanceId: string, tcpPort: number, agentType: string): void {
     if (this.connections.has(instanceId)) {
-      console.warn(
-        `[Orchestrator] Agent ${instanceId} already registered, skipping`,
-      );
+      console.warn(`[Orchestrator] Agent ${instanceId} already registered, skipping`);
       return;
     }
 
@@ -104,9 +97,7 @@ export class EisenOrchestrator {
     this.connectTcp(conn);
     this.emitAgentUpdate();
 
-    console.log(
-      `[Orchestrator] Added agent ${displayName} (${instanceId}) on port ${tcpPort}`,
-    );
+    console.log(`[Orchestrator] Added agent ${displayName} (${instanceId}) on port ${tcpPort}`);
   }
 
   /**
@@ -115,9 +106,7 @@ export class EisenOrchestrator {
   removeAgent(instanceId: string): void {
     const conn = this.connections.get(instanceId);
     if (!conn) {
-      console.warn(
-        `[Orchestrator] removeAgent called for unknown instanceId=${instanceId}, ignoring`,
-      );
+      console.warn(`[Orchestrator] removeAgent called for unknown instanceId=${instanceId}, ignoring`);
       return;
     }
     console.log(
@@ -154,9 +143,7 @@ export class EisenOrchestrator {
     // Emit delta reflecting the removal
     this.emitMergedDelta(updatedPaths, removedPaths);
 
-    console.log(
-      `[Orchestrator] Removed agent ${conn.displayName} (${instanceId})`,
-    );
+    console.log(`[Orchestrator] Removed agent ${conn.displayName} (${instanceId})`);
   }
 
   /**
@@ -270,20 +257,13 @@ export class EisenOrchestrator {
       conn.socket.destroy();
     }
 
-    console.log(
-      `[Orchestrator] Connecting to eisen-core TCP on port ${conn.tcpPort} for ${conn.displayName}`,
-    );
+    console.log(`[Orchestrator] Connecting to eisen-core TCP on port ${conn.tcpPort} for ${conn.displayName}`);
 
-    const socket = net.createConnection(
-      { host: "127.0.0.1", port: conn.tcpPort },
-      () => {
-        console.log(
-          `[Orchestrator] Connected to ${conn.displayName} TCP on port ${conn.tcpPort}`,
-        );
-        conn.connected = true;
-        this.emitAgentUpdate();
-      },
-    );
+    const socket = net.createConnection({ host: "127.0.0.1", port: conn.tcpPort }, () => {
+      console.log(`[Orchestrator] Connected to ${conn.displayName} TCP on port ${conn.tcpPort}`);
+      conn.connected = true;
+      this.emitAgentUpdate();
+    });
 
     conn.socket = socket;
     conn.buffer = "";
@@ -323,16 +303,11 @@ export class EisenOrchestrator {
     });
 
     socket.on("error", (err) => {
-      console.error(
-        `[Orchestrator] TCP error for ${conn.displayName}:`,
-        err.message,
-      );
+      console.error(`[Orchestrator] TCP error for ${conn.displayName}:`, err.message);
     });
 
     socket.on("close", () => {
-      console.log(
-        `[Orchestrator] TCP connection closed for ${conn.displayName}`,
-      );
+      console.log(`[Orchestrator] TCP connection closed for ${conn.displayName}`);
       conn.connected = false;
       conn.socket = null;
       this.emitAgentUpdate();
@@ -357,17 +332,11 @@ export class EisenOrchestrator {
         conn.processor.processUsage(msg);
         break;
       default:
-        console.log(
-          `[Orchestrator] Unknown message type from ${conn.displayName}:`,
-          (msg as any).type,
-        );
+        console.log(`[Orchestrator] Unknown message type from ${conn.displayName}:`, (msg as any).type);
     }
   }
 
-  private handleSnapshot(
-    conn: AgentConnection,
-    msg: WireMessage & { type: "snapshot" },
-  ): void {
+  private handleSnapshot(conn: AgentConnection, msg: WireMessage & { type: "snapshot" }): void {
     const processed = conn.processor.processSnapshot(msg);
     console.log(
       `[Orchestrator] Received snapshot from ${conn.displayName} (${conn.instanceId}): seq=${processed.seq}, ${processed.nodes.size} nodes`,
@@ -398,10 +367,7 @@ export class EisenOrchestrator {
       if (existing) {
         applyAgentUpdate(existing, conn.instanceId, agentState);
       } else {
-        this.mergedState.set(
-          path,
-          createMergedNode(path, conn.instanceId, agentState),
-        );
+        this.mergedState.set(path, createMergedNode(path, conn.instanceId, agentState));
       }
     }
 
@@ -409,10 +375,7 @@ export class EisenOrchestrator {
     this.emitFullSnapshot();
   }
 
-  private handleDelta(
-    conn: AgentConnection,
-    msg: WireMessage & { type: "delta" },
-  ): void {
+  private handleDelta(conn: AgentConnection, msg: WireMessage & { type: "delta" }): void {
     const processed = conn.processor.processDelta(msg);
 
     // Skip stale deltas
@@ -441,10 +404,7 @@ export class EisenOrchestrator {
       if (existing) {
         applyAgentUpdate(existing, conn.instanceId, agentState);
       } else {
-        this.mergedState.set(
-          update.path,
-          createMergedNode(update.path, conn.instanceId, agentState),
-        );
+        this.mergedState.set(update.path, createMergedNode(update.path, conn.instanceId, agentState));
       }
       updatedPaths.push(update.path);
     }
@@ -479,10 +439,7 @@ export class EisenOrchestrator {
     this.onMergedSnapshot(this.getMergedSnapshot());
   }
 
-  private emitMergedDelta(
-    updatedPaths: string[],
-    removedPaths: string[],
-  ): void {
+  private emitMergedDelta(updatedPaths: string[], removedPaths: string[]): void {
     if (!this.onMergedDelta) return;
 
     this.seq++;

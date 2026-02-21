@@ -1,8 +1,8 @@
-import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { describe, it } from "node:test";
 
 import { DefaultProcessor, getProcessor } from "../processor";
-import type { WireSnapshot, WireDelta, WireUsage } from "../types";
+import type { WireDelta, WireSnapshot, WireUsage } from "../types";
 
 // ---------------------------------------------------------------------------
 // DefaultProcessor

@@ -14,15 +14,17 @@ impl TypeScriptParser {
     pub fn new() -> Self {
         let mut ts_parser = Parser::new();
         let mut tsx_parser = Parser::new();
-        
+
         let ts_lang = tree_sitter_typescript::language_typescript();
         let tsx_lang = tree_sitter_typescript::language_tsx();
-        
-        ts_parser.set_language(ts_lang)
+
+        ts_parser
+            .set_language(ts_lang)
             .expect("Failed to load TypeScript grammar");
-        tsx_parser.set_language(tsx_lang)
+        tsx_parser
+            .set_language(tsx_lang)
             .expect("Failed to load TSX grammar");
-        
+
         Self {
             ts_parser: Mutex::new(ts_parser),
             tsx_parser: Mutex::new(tsx_parser),
@@ -38,10 +40,17 @@ impl TypeScriptParser {
     }
 
     fn extract_name(&self, node: &tree_sitter::Node, content: &str) -> Option<String> {
-        node.utf8_text(content.as_bytes()).ok().map(|s| s.to_string())
+        node.utf8_text(content.as_bytes())
+            .ok()
+            .map(|s| s.to_string())
     }
 
-    fn extract_calls_from_node(&self, node: tree_sitter::Node, content: &str, out: &mut Vec<String>) {
+    fn extract_calls_from_node(
+        &self,
+        node: tree_sitter::Node,
+        content: &str,
+        out: &mut Vec<String>,
+    ) {
         if node.kind() == "call_expression" {
             if let Some(func_node) = node.child_by_field_name("function") {
                 if let Some(name) = self.extract_callee_name(&func_node, content) {
@@ -79,19 +88,24 @@ impl LanguageParser for TypeScriptParser {
 
     fn parse_file(&self, content: &str, path: &Path) -> Vec<Symbol> {
         let mut symbols = Vec::new();
-        
-        let is_tsx = path.extension()
+
+        let is_tsx = path
+            .extension()
             .and_then(|e| e.to_str())
             .map(|e| e.eq_ignore_ascii_case("tsx"))
             .unwrap_or(false);
 
-        let parser = if is_tsx { &self.tsx_parser } else { &self.ts_parser };
-        
+        let parser = if is_tsx {
+            &self.tsx_parser
+        } else {
+            &self.ts_parser
+        };
+
         let mut parser_guard = match parser.lock() {
             Ok(guard) => guard,
             Err(_) => return symbols,
         };
-        
+
         let tree = match parser_guard.parse(content, None) {
             Some(t) => t,
             None => return symbols,
@@ -187,8 +201,12 @@ impl LanguageParser for TypeScriptParser {
                                     if value_node.kind() == "arrow_function" {
                                         if let Some(name) = self.extract_name(&name_node, content) {
                                             let mut calls = Vec::new();
-                                            if let Some(body) = value_node.child_by_field_name("body") {
-                                                self.extract_calls_from_node(body, content, &mut calls);
+                                            if let Some(body) =
+                                                value_node.child_by_field_name("body")
+                                            {
+                                                self.extract_calls_from_node(
+                                                    body, content, &mut calls,
+                                                );
                                             }
                                             symbols.push(Symbol {
                                                 name,
@@ -219,12 +237,22 @@ impl LanguageParser for TypeScriptParser {
                             let mut class_cursor = body.walk();
                             for class_child in body.children(&mut class_cursor) {
                                 if class_child.kind() == "method_definition" {
-                                    if let Some(method_name_node) = class_child.child_by_field_name("name") {
-                                        if let Some(method_name) = self.extract_name(&method_name_node, content) {
+                                    if let Some(method_name_node) =
+                                        class_child.child_by_field_name("name")
+                                    {
+                                        if let Some(method_name) =
+                                            self.extract_name(&method_name_node, content)
+                                        {
                                             let mut calls = Vec::new();
-                                            if let Some(body) = class_child.child_by_field_name("value") {
-                                                if let Some(fn_body) = body.child_by_field_name("body") {
-                                                    self.extract_calls_from_node(fn_body, content, &mut calls);
+                                            if let Some(body) =
+                                                class_child.child_by_field_name("value")
+                                            {
+                                                if let Some(fn_body) =
+                                                    body.child_by_field_name("body")
+                                                {
+                                                    self.extract_calls_from_node(
+                                                        fn_body, content, &mut calls,
+                                                    );
                                                 }
                                             }
                                             symbols.push(Symbol {
