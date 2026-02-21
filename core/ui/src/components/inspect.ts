@@ -1,5 +1,4 @@
-// biome-ignore lint/correctness/noUnusedImports: JSX runtime
-import { h } from "../jsx-runtime";
+import { el } from "../dom";
 import { Badge } from "./badge";
 import { KVRow } from "./kv-row";
 
@@ -16,8 +15,8 @@ export class Inspect {
   private content: HTMLElement;
 
   constructor() {
-    this.content = (<div className="p-4" />) as HTMLElement;
-    this.el = (<div className="h-full overflow-y-auto" />) as HTMLElement;
+    this.content = el("div", { className: "inspect-body" });
+    this.el = el("div", { className: "inspect-scroll" });
     this.el.append(this.content);
   }
 
@@ -27,14 +26,7 @@ export class Inspect {
     const label = id.includes("::") ? (id.split("::").pop() as string) : id.split("/").pop() || "/";
 
     this.content.append(
-      (
-        <div className="flex items-center gap-2.5 mb-3 min-w-0">
-          {Badge(meta.kind)}
-          <span className="text-foreground text-md font-medium overflow-hidden text-ellipsis whitespace-nowrap min-w-0">
-            {label}
-          </span>
-        </div>
-      ) as HTMLElement,
+      el("div", { className: "inspect-header" }, Badge(meta.kind), el("span", { className: "inspect-label" }, label)),
     );
 
     if (meta.lines) this.content.append(KVRow("lines", meta.lines));
@@ -42,15 +34,7 @@ export class Inspect {
     if (meta.action) this.content.append(KVRow("action", meta.action));
     if (meta.agents) this.content.append(KVRow("agents", meta.agents));
 
-    this.content.append(
-      (
-        <div className="mt-3 pt-3 border-t border-border-subtle">
-          <span className="text-xs text-faint font-mono overflow-hidden text-ellipsis whitespace-nowrap block">
-            {id}
-          </span>
-        </div>
-      ) as HTMLElement,
-    );
+    this.content.append(el("div", { className: "inspect-footer" }, el("span", { className: "inspect-path" }, id)));
   }
 
   hide(): void {

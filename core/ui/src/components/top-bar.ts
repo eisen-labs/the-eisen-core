@@ -1,5 +1,4 @@
-// biome-ignore lint/correctness/noUnusedImports: JSX runtime
-import { h } from "../jsx-runtime";
+import { el } from "../dom";
 import { ICON } from "../panels/icons";
 import type { AgentInfo } from "../state";
 
@@ -7,10 +6,6 @@ export interface TopBarCb {
   onSelect(id: string): void;
   onAdd(): void;
 }
-
-const TAB = "flex items-center gap-2 px-3 h-8 cursor-pointer shrink-0 rounded-lg text-sm";
-const TAB_ON = `${TAB} bg-raised text-foreground`;
-const TAB_OFF = `${TAB} text-muted hover:text-foreground hover:bg-raised`;
 
 export class TopBar {
   el: HTMLElement;
@@ -24,18 +19,15 @@ export class TopBar {
 
   constructor(cb: TopBarCb) {
     this.cb = cb;
-    this.strip = (
-      <div className="flex items-center min-w-0 overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden gap-0.5" />
-    ) as HTMLElement;
-    const add = (
-      <button
-        type="button"
-        className="w-8 h-8 border-none bg-transparent text-faint flex items-center justify-center cursor-pointer shrink-0 hover:text-foreground hover:bg-raised rounded-lg"
-        innerHTML={ICON.plus}
-      />
-    ) as HTMLButtonElement;
+    this.strip = el("div", { className: "tab-strip" });
+    const add = el("button", {
+      type: "button",
+      className: "add-btn",
+      innerHTML: ICON.plus,
+      "aria-label": "New chat",
+    });
     add.addEventListener("click", () => cb.onAdd());
-    this.el = (<div className="flex items-center h-11 px-1.5 gap-0.5" />) as HTMLElement;
+    this.el = el("div", { className: "top-bar" });
     this.el.append(this.strip, add);
   }
 
@@ -48,17 +40,12 @@ export class TopBar {
 
     for (const a of agents) {
       const active = a.instanceId === this.selected;
-      const tab = (<div className={active ? TAB_ON : TAB_OFF} />) as HTMLElement;
-      const dot = (
-        <div
-          className={`w-2.5 h-2.5 shrink-0 rounded-full${a.connected ? "" : " opacity-30"}`}
-          style={{ background: a.color }}
-        />
-      ) as HTMLElement;
-      tab.append(
-        dot,
-        (<span className="whitespace-nowrap overflow-hidden text-ellipsis">{a.displayName}</span>) as HTMLElement,
-      );
+      const tab = el("div", { className: active ? "tab active" : "tab" });
+      const dot = el("div", {
+        className: `tab-dot${a.connected ? "" : " dim"}`,
+        style: { background: a.color },
+      });
+      tab.append(dot, el("span", { className: "tab-text" }, a.displayName));
       tab.addEventListener("click", () => this.select(a.instanceId));
       this.strip.append(tab);
       this.tabs.set(a.instanceId, tab);
@@ -77,7 +64,7 @@ export class TopBar {
     this.pending?.remove();
     this.pending = null;
     this.selected = id;
-    for (const [k, el] of this.tabs) el.className = k === id ? TAB_ON : TAB_OFF;
+    for (const [k, t] of this.tabs) t.className = k === id ? "tab active" : "tab";
     this.cb.onSelect(id);
   }
 
@@ -90,10 +77,10 @@ export class TopBar {
 
   showPending(name: string): void {
     this.pending?.remove();
-    const tab = (<div className={`${TAB} opacity-40 pointer-events-none`} />) as HTMLElement;
+    const tab = el("div", { className: "tab pending" });
     tab.append(
-      (<div className="w-2.5 h-2.5 shrink-0 rounded-full opacity-30 bg-muted" />) as HTMLElement,
-      (<span className="whitespace-nowrap text-muted">{name}</span>) as HTMLElement,
+      el("div", { className: "tab-dot dim", style: { background: "var(--text-2)" } }),
+      el("span", { className: "tab-text" }, name),
     );
     this.strip.append(tab);
     this.pending = tab;

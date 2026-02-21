@@ -2,8 +2,7 @@ import { Chat } from "./components/chat";
 import { Inspect, type NodeMeta } from "./components/inspect";
 import { Toolbar } from "./components/toolbar";
 import { TopBar } from "./components/top-bar";
-// biome-ignore lint/correctness/noUnusedImports: JSX runtime
-import { h } from "./jsx-runtime";
+import { el } from "./dom";
 import { ICON } from "./panels/icons";
 import { Renderer } from "./render";
 import { Selection, type SelectionMode } from "./selection";
@@ -48,35 +47,27 @@ class Eisen {
     document.documentElement.setAttribute("data-theme", "dark");
     this.state = createState();
 
-    // Use existing #graph div from the HTML template as canvas
     const canvas = document.getElementById("graph") as HTMLElement;
-    canvas.className = "relative bg-bg overflow-hidden";
 
     this.root = document.body;
     this.root.style.cssText = "display:grid; width:100%; height:100%;";
     this.updateGrid();
 
-    const header = (
-      <div className="bg-surface border-b border-border" style={{ gridColumn: "1 / -1" }} />
-    ) as HTMLElement;
-    const PANEL = "relative bg-surface rounded-xl overflow-hidden flex flex-col border border-border";
+    const header = el("div", { className: "header-bar", style: { gridColumn: "1 / -1" } });
 
     // Left panel (chat)
-    this.left = (<div className={`${PANEL} m-2 mr-0`} />) as HTMLElement;
-    const leftHandle = (
-      <div className="absolute top-0 right-[-3px] w-[6px] h-full cursor-ew-resize z-10" />
-    ) as HTMLElement;
+    this.left = el("div", { className: "panel panel-left" });
+    const leftHandle = el("div", { className: "resize-handle resize-left" });
     leftHandle.addEventListener("mousedown", (e) => this.startResize(e, "left"));
     this.left.append(leftHandle);
 
     // Chevron toggle
-    const chevron = (
-      <button
-        type="button"
-        className="absolute left-2 top-2 z-20 w-5 h-5 bg-transparent border-none flex items-center justify-center cursor-pointer text-muted hover:text-foreground rounded [&>svg]:w-3.5 [&>svg]:h-3.5"
-        innerHTML={ICON.chevronLeft}
-      />
-    ) as HTMLButtonElement;
+    const chevron = el("button", {
+      type: "button",
+      className: "chevron-toggle",
+      innerHTML: ICON.chevronLeft,
+      "aria-label": "Toggle panels",
+    });
     chevron.addEventListener("click", () => {
       this.panelsOpen = !this.panelsOpen;
       this.left.style.display = this.panelsOpen ? "" : "none";
@@ -87,10 +78,8 @@ class Eisen {
     canvas.append(chevron);
 
     // Right panel (inspect)
-    this.right = (<div className={`${PANEL} m-2 ml-0`} />) as HTMLElement;
-    const rightHandle = (
-      <div className="absolute top-0 left-[-3px] w-[6px] h-full cursor-ew-resize z-10" />
-    ) as HTMLElement;
+    this.right = el("div", { className: "panel panel-right" });
+    const rightHandle = el("div", { className: "resize-handle resize-right" });
     rightHandle.addEventListener("mousedown", (e) => this.startResize(e, "right"));
     this.right.append(rightHandle);
 
@@ -170,7 +159,7 @@ class Eisen {
     canvas.style.gridColumn = "2";
     this.right.style.gridColumn = "3";
 
-    const toolbarWrap = (<div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-30" />) as HTMLElement;
+    const toolbarWrap = el("div", { className: "toolbar-anchor" });
     toolbarWrap.append(toolbar.el);
 
     // Insert header before canvas, then left before canvas, right after canvas
@@ -206,15 +195,21 @@ class Eisen {
     e.preventDefault();
     const startX = e.clientX;
     const startW = side === "left" ? this.leftWidth : this.rightWidth;
+    let raf = 0;
     document.body.style.userSelect = "none";
     document.body.style.cursor = "ew-resize";
     const move = (ev: MouseEvent) => {
-      const d = ev.clientX - startX;
-      if (side === "left") this.leftWidth = Math.max(240, Math.min(600, startW + d));
-      else this.rightWidth = Math.max(200, Math.min(600, startW - d));
-      this.updateGrid();
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        const d = ev.clientX - startX;
+        if (side === "left") this.leftWidth = Math.max(240, Math.min(600, startW + d));
+        else this.rightWidth = Math.max(200, Math.min(600, startW - d));
+        this.updateGrid();
+      });
     };
     const up = () => {
+      if (raf) cancelAnimationFrame(raf);
       document.body.style.userSelect = "";
       document.body.style.cursor = "";
       document.removeEventListener("mousemove", move);
@@ -253,10 +248,6 @@ class Eisen {
     document.addEventListener("keydown", (e) => {
       const tag = (e.target as HTMLElement).tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      if (e.key === "t") {
-        const cur = document.documentElement.getAttribute("data-theme");
-        document.documentElement.setAttribute("data-theme", cur === "dark" ? "light" : "dark");
-      }
       if (e.key === "s") {
         scaleIdx = (scaleIdx + 1) % scales.length;
         const s = scales[scaleIdx];
@@ -387,6 +378,12 @@ class Eisen {
   private loadMockData(): void {
     applySnapshot(this.state, { seq: 0, nodes: {}, calls: [] });
     this.rerender();
+  }
+
+  destroy(): void {
+    this.chat.destroy();
+    this.selection.destroy();
+    this.renderer.destroy();
   }
 }
 

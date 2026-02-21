@@ -1,5 +1,4 @@
-// biome-ignore lint/correctness/noUnusedImports: JSX runtime
-import { h } from "../jsx-runtime";
+import { el } from "../dom";
 import { ICON } from "../panels/icons";
 
 export interface ToolbarCb {
@@ -22,19 +21,16 @@ export class Toolbar {
   el: HTMLElement;
 
   constructor(cb: ToolbarCb) {
-    this.el = (
-      <div className="flex items-center gap-0.5 bg-raised backdrop-blur-xl border border-border-subtle rounded-xl p-1" />
-    ) as HTMLElement;
+    this.el = el("div", { className: "toolbar" });
     for (const b of BUTTONS) {
-      const btn = (
-        <button
-          type="button"
-          className="w-8 h-8 p-1.5 border-none bg-transparent text-muted rounded-lg flex items-center justify-center cursor-pointer hover:text-foreground hover:bg-raised [&>svg]:w-full [&>svg]:h-full"
-          tabIndex={-1}
-          innerHTML={b.icon}
-          title={b.title}
-        />
-      ) as HTMLButtonElement;
+      const btn = el("button", {
+        type: "button",
+        className: "icon-btn",
+        tabIndex: -1,
+        innerHTML: b.icon,
+        title: b.title,
+        "aria-label": b.title,
+      });
       btn.addEventListener("click", () => cb[b.key]());
       this.el.append(btn);
     }

@@ -1,5 +1,4 @@
-// biome-ignore lint/correctness/noUnusedImports: JSX runtime
-import { h } from "../jsx-runtime";
+import { el } from "../dom";
 import { ICON } from "../panels/icons";
 import type { AvailableAgent, AvailableCommand, ContextChip, FileSearchResult, SessionMeta } from "../types";
 import { escapeHtml } from "../utils";
@@ -12,11 +11,8 @@ export interface ChatCb {
   onFileSearch(query: string): void;
 }
 
-const DROPDOWN =
-  "absolute bottom-full mb-xs left-0 bg-raised backdrop-blur-xl border border-border-subtle rounded-xl p-md overflow-y-auto flex flex-col gap-sm";
-const OPTION = "flex items-center gap-md px-md h-9 text-sm rounded-lg cursor-pointer";
-const OPTION_ON = `${OPTION} bg-accent-muted text-accent`;
-const OPTION_OFF = `${OPTION} text-muted hover:text-foreground hover:bg-raised`;
+const OPT = "option";
+const OPT_ON = "option active";
 
 export class Chat {
   el: HTMLElement;
@@ -46,77 +42,88 @@ export class Chat {
 
   constructor(cb: ChatCb) {
     this.cb = cb;
-    this.messages = (
-      <div className="flex-1 overflow-y-auto min-h-0 p-md space-y-md [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" />
-    ) as HTMLElement;
+    this.messages = el("div", { className: "chat-scroll" });
 
     this.input = document.createElement("textarea");
-    this.input.className =
-      "flex-1 bg-transparent px-md text-foreground font-sans text-sm outline-none placeholder:text-faint resize-none leading-7 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden";
+    this.input.className = "chat-input";
     this.input.rows = 1;
     this.input.placeholder = "Send a message...";
+    this.input.setAttribute("aria-label", "Chat message");
     this.input.addEventListener("keydown", (e) => this.onKey(e));
     this.input.addEventListener("input", () => {
       this.autoResize();
       this.onInput();
     });
 
-    const sendBtn = (
-      <button
-        type="button"
-        className="shrink-0 w-7 h-7 bg-accent text-white border-none rounded-lg flex items-center justify-center cursor-pointer hover:brightness-110 [&>svg]:w-4 [&>svg]:h-4"
-        innerHTML={ICON.send}
-      />
-    ) as HTMLButtonElement;
+    const sendBtn = el("button", {
+      type: "button",
+      className: "send-btn",
+      innerHTML: ICON.send,
+      "aria-label": "Send message",
+    });
     sendBtn.addEventListener("click", () => this.doSend());
 
-    const settingsBtn = (
-      <button
-        type="button"
-        className="shrink-0 w-7 h-7 bg-raised backdrop-blur-xl border border-border-subtle rounded-lg flex items-center justify-center cursor-pointer text-muted hover:text-foreground [&>svg]:w-4 [&>svg]:h-4"
-        innerHTML={ICON.settings}
-      />
-    ) as HTMLButtonElement;
+    const settingsBtn = el("button", {
+      type: "button",
+      className: "settings-btn",
+      innerHTML: ICON.settings,
+      "aria-label": "Settings",
+    });
     settingsBtn.addEventListener("click", () => this.toggle("settings"));
 
     this.dropdowns = {
-      cmd: (<div className={`${DROPDOWN} max-h-[200px] hidden z-[11]`} />) as HTMLElement,
-      file: (<div className={`${DROPDOWN} max-h-[400px] hidden z-10`} />) as HTMLElement,
-      settings: (
-        <div className="absolute top-10 left-md bg-raised backdrop-blur-xl border border-border-subtle rounded-xl p-md hidden z-[13] flex flex-col gap-sm" />
-      ) as HTMLElement,
+      cmd: el("div", { className: "dropdown dropdown-cmd" }),
+      file: el("div", { className: "dropdown dropdown-file" }),
+      settings: el("div", { className: "dropdown-settings" }),
     };
+    for (const d of Object.values(this.dropdowns)) d.style.display = "none";
+
     this.dropdowns.cmd.addEventListener("mousedown", (e) => e.preventDefault());
     this.dropdowns.cmd.addEventListener("click", (e) => {
-      const el = (e.target as HTMLElement).closest("[data-i]") as HTMLElement | null;
-      if (el) this.pickCmd(Number(el.dataset.i));
+      const t = (e.target as HTMLElement).closest("[data-i]") as HTMLElement | null;
+      if (t) this.pickCmd(Number(t.dataset.i));
     });
     this.dropdowns.file.addEventListener("click", (e) => {
-      const el = (e.target as HTMLElement).closest("[data-i]") as HTMLElement | null;
-      if (el) this.pickFile(Number(el.dataset.i));
+      const t = (e.target as HTMLElement).closest("[data-i]") as HTMLElement | null;
+      if (t) this.pickFile(Number(t.dataset.i));
     });
     this.dropdowns.settings.addEventListener("mousedown", (e) => e.preventDefault());
 
-    this.chipBar = (<div className="flex flex-wrap gap-sm px-md py-sm shrink-0 empty:hidden" />) as HTMLElement;
+    this.chipBar = el("div", { className: "chip-bar" });
+    this.chipBar.addEventListener("click", (e) => {
+      const x = (e.target as HTMLElement).closest(".chip-x");
+      if (!x) return;
+      const c = x.closest("[data-chip]") as HTMLElement | null;
+      if (c?.dataset.chip) {
+        this.chips = this.chips.filter((ch) => ch.id !== c.dataset.chip);
+        this.renderChips();
+      }
+    });
 
-    const inputRow = (
-      <div className="relative flex items-end shrink-0 mx-md mb-md bg-raised backdrop-blur-xl border border-border-subtle rounded-xl p-sm gap-xs" />
-    ) as HTMLElement;
+    const inputRow = el("div", { className: "input-row" });
     inputRow.append(this.dropdowns.cmd, this.dropdowns.file, this.input, sendBtn);
 
-    this.chatView = (<div className="relative flex flex-col h-full" />) as HTMLElement;
+    this.chatView = el("div", { className: "chat-view" });
     this.chatView.append(
       this.messages,
       this.chipBar,
       inputRow,
-      (<div className="absolute top-md left-md z-[13]">{settingsBtn}</div>) as HTMLElement,
+      el("div", { className: "settings-wrap" }, settingsBtn),
       this.dropdowns.settings,
     );
 
-    this.pickerView = (<div className="flex flex-col h-full" style={{ display: "none" }} />) as HTMLElement;
+    this.pickerView = el("div", { className: "picker-view" });
+    this.pickerView.style.display = "none";
 
-    this.el = (<div className="flex flex-col h-full" />) as HTMLElement;
+    this.el = el("div", { className: "chat-root" });
     this.el.append(this.chatView, this.pickerView);
+  }
+
+  destroy(): void {
+    if (this.fileTimer) {
+      clearTimeout(this.fileTimer);
+      this.fileTimer = null;
+    }
   }
 
   selectAgent(id: string): void {
@@ -138,12 +145,10 @@ export class Chat {
     this.chatView.style.display = "none";
     this.pickerView.style.display = "";
     this.pickerView.innerHTML = "";
-    const spacer = (<div className="flex-1" />) as HTMLElement;
-    const list = (
-      <div className="mx-md mb-md bg-raised backdrop-blur-xl border border-border-subtle rounded-xl p-md flex flex-col gap-sm" />
-    ) as HTMLElement;
+    const spacer = el("div", { className: "flex-spacer" });
+    const list = el("div", { className: "picker-list" });
     for (const a of this.agents) {
-      const btn = (<div className={OPTION_OFF}>{a.name}</div>) as HTMLElement;
+      const btn = el("div", { className: OPT }, a.name);
       btn.addEventListener("click", () => this.cb.onAddAgent(a.id));
       list.append(btn);
     }
@@ -165,9 +170,7 @@ export class Chat {
   streamStart(id: string): void {
     if (id !== this.activeId) return;
     this.streamText = "";
-    this.streamEl = (
-      <div className="px-lg py-md text-sm whitespace-pre-wrap break-words text-foreground bg-raised mr-8 rounded-xl rounded-bl-sm" />
-    ) as HTMLElement;
+    this.streamEl = el("div", { className: "msg msg-agent" });
     this.messages.append(this.streamEl);
   }
 
@@ -180,6 +183,7 @@ export class Chat {
 
   streamEnd(id: string): void {
     if (id !== this.activeId) return;
+    this.streamEl?.remove();
     this.streamEl = null;
     this.streamText = "";
   }
@@ -238,13 +242,9 @@ export class Chat {
 
     const section = (label: string, items: { name: string; active: boolean; pick: () => void }[]) => {
       if (!items.length) return;
-      p.append(
-        (
-          <div className="px-md pt-md pb-xs text-xs text-faint font-medium uppercase tracking-wide">{label}</div>
-        ) as HTMLElement,
-      );
+      p.append(el("div", { className: "settings-label" }, label));
       for (const it of items) {
-        const row = (<div className={it.active ? OPTION_ON : OPTION_OFF}>{it.name}</div>) as HTMLElement;
+        const row = el("div", { className: it.active ? OPT_ON : OPT }, it.name);
         row.addEventListener("click", it.pick);
         p.append(row);
       }
@@ -393,13 +393,13 @@ export class Chat {
     const p = this.dropdowns.cmd;
     p.innerHTML = list
       .map((cmd, i) => {
-        const desc = cmd.description ? `<span class="text-xs text-faint">${escapeHtml(cmd.description)}</span>` : "";
-        const cls = i === this.cmdIdx ? OPTION_ON : OPTION_OFF;
-        return `<div class="${cls}" data-i="${i}"><span class="font-medium shrink-0">/${escapeHtml(cmd.name)}</span>${desc}</div>`;
+        const desc = cmd.description ? `<span class="cmd-desc">${escapeHtml(cmd.description)}</span>` : "";
+        const cls = i === this.cmdIdx ? OPT_ON : OPT;
+        return `<div class="${cls}" data-i="${i}"><span class="cmd-name">/${escapeHtml(cmd.name)}</span>${desc}</div>`;
       })
       .join("");
     p.style.display = "block";
-    p.querySelector(".bg-accent-muted")?.scrollIntoView({ block: "nearest" });
+    p.querySelector(".active")?.scrollIntoView({ block: "nearest" });
   }
 
   private pickCmd(i: number): void {
@@ -433,19 +433,19 @@ export class Chat {
   private renderFiles(): void {
     const p = this.dropdowns.file;
     if (!this.files.length) {
-      p.innerHTML = '<div class="p-md text-center text-faint text-sm">No files found</div>';
+      p.innerHTML = '<div class="file-empty">No files found</div>';
       p.style.display = "block";
       return;
     }
     p.innerHTML = this.files
       .map((r, i) => {
         const name = r.isDirectory ? `${r.fileName}/` : r.fileName;
-        const cls = i === this.fileIdx ? OPTION_ON : OPTION_OFF;
-        return `<div class="${cls} flex-col !items-start !h-auto py-sm" data-i="${i}"><span class="text-sm">${escapeHtml(name)}</span><span class="text-xs text-faint font-mono truncate w-full">${escapeHtml(r.relativePath)}</span></div>`;
+        const cls = i === this.fileIdx ? `${OPT_ON} file-item` : `${OPT} file-item`;
+        return `<div class="${cls}" data-i="${i}"><span class="file-name">${escapeHtml(name)}</span><span class="file-path">${escapeHtml(r.relativePath)}</span></div>`;
       })
       .join("");
     p.style.display = "block";
-    p.querySelector(".bg-accent-muted")?.scrollIntoView({ block: "nearest" });
+    p.querySelector(".active")?.scrollIntoView({ block: "nearest" });
   }
 
   private pickFile(i: number): void {
@@ -458,7 +458,7 @@ export class Chat {
     }
     this.clearAtText();
     this.chips.push({
-      id: Date.now() + "-" + Math.random().toString(36).slice(2, 9),
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
       filePath: r.path,
       fileName: r.fileName,
       isDirectory: r.isDirectory || undefined,
@@ -471,7 +471,7 @@ export class Chat {
   private clearAtText(): void {
     if (this.atPos === null) return;
     const cursor = this.input.selectionStart ?? this.input.value.length;
-    this.input.value = this.input.value.slice(0, this.atPos) + this.input.value.slice(cursor);
+    this.input.value = `${this.input.value.slice(0, this.atPos)}${this.input.value.slice(cursor)}`;
     this.input.selectionStart = this.input.selectionEnd = this.atPos;
   }
 
@@ -483,18 +483,9 @@ export class Chat {
     this.chipBar.innerHTML = this.chips
       .map((c) => {
         const label = c.isDirectory ? `${c.fileName}/` : c.fileName;
-        return `<div class="inline-flex items-center gap-1 px-2 py-0.5 text-xs bg-accent-muted text-accent rounded-lg max-w-[180px] font-mono" data-chip="${escapeHtml(c.id)}"><span class="truncate">${escapeHtml(label)}</span><button class="bg-transparent border-none cursor-pointer text-accent text-sm px-px opacity-60 leading-none shrink-0 chip-x hover:opacity-100">&times;</button></div>`;
+        return `<div class="chip" data-chip="${escapeHtml(c.id)}"><span class="truncate">${escapeHtml(label)}</span><button type="button" class="chip-x">&times;</button></div>`;
       })
       .join("");
-    this.chipBar.querySelectorAll(".chip-x").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const el = btn.closest("[data-chip]") as HTMLElement | null;
-        if (el?.dataset.chip) {
-          this.chips = this.chips.filter((c) => c.id !== el.dataset.chip);
-          this.renderChips();
-        }
-      });
-    });
   }
 
   private renderMessages(): void {
@@ -508,12 +499,8 @@ export class Chat {
 
   private appendMsg(msg: { from: string; text: string }): void {
     const isUser = msg.from === "user";
-    const el = (
-      <div
-        className={`px-lg py-md text-sm whitespace-pre-wrap break-words text-foreground rounded-xl${isUser ? " bg-accent-muted ml-8 rounded-br-sm" : " bg-raised mr-8 rounded-bl-sm"}`}
-      />
-    ) as HTMLElement;
-    el.textContent = msg.text;
-    this.messages.append(el);
+    const msgEl = el("div", { className: `msg ${isUser ? "msg-user" : "msg-agent"}` });
+    msgEl.textContent = msg.text;
+    this.messages.append(msgEl);
   }
 }

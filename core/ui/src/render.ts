@@ -121,6 +121,7 @@ export class Renderer {
   private depsMode = false;
   private depsVisibleIds = new Set<string>();
   private onHoverCallback?: (id: string | null, screenX?: number, screenY?: number) => void;
+  private resizeObserver: ResizeObserver | null = null;
   private static readonly ACTIVE_LINK_DISTANCE_FACTOR = 0.9;
   private static readonly ACTIVE_LINK_STRENGTH_FACTOR = 2.0;
   private static readonly ACTIVE_CHARGE_FACTOR = 0.7;
@@ -134,10 +135,11 @@ export class Renderer {
     this.onHoverCallback = opts?.onHover;
     this.graph = this.createGraph(container);
     this.bindPointerEvents(container);
-    new ResizeObserver(() => {
+    this.resizeObserver = new ResizeObserver(() => {
       this.graph.width(container.clientWidth);
       this.graph.height(container.clientHeight);
-    }).observe(container);
+    });
+    this.resizeObserver.observe(container);
   }
 
   cycleRegionDepthMode(): void {
@@ -822,6 +824,16 @@ export class Renderer {
 
   getGraph(): Graph {
     return this.graph;
+  }
+
+  destroy(): void {
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
+    if (this.pendingGraphUpdate) {
+      clearTimeout(this.pendingGraphUpdate);
+      this.pendingGraphUpdate = null;
+    }
+    this.graph._destructor?.();
   }
 
   getNodeScreenPosition(id: string): { x: number; y: number } | null {

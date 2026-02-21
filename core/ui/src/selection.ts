@@ -13,7 +13,6 @@ export class Selection {
   private dragging = false;
   private startX = 0;
   private startY = 0;
-  private lastMeta = false;
   private mode: SelectionMode = "marquee";
   private lassoCanvas: HTMLCanvasElement;
   private lassoCtx: CanvasRenderingContext2D;
@@ -113,7 +112,6 @@ export class Selection {
   };
 
   private onMouseDown = (e: MouseEvent): void => {
-    this.lastMeta = e.metaKey;
     if (!e.shiftKey || !this.enabled) return;
     e.stopPropagation();
     e.preventDefault();
@@ -132,7 +130,6 @@ export class Selection {
   };
 
   private onMouseUp = (e: MouseEvent): void => {
-    this.lastMeta = e.metaKey;
     if (this.lassoing) {
       e.stopPropagation();
       e.preventDefault();
