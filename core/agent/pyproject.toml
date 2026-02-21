@@ -1,0 +1,27 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "eisen-agent"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "dspy>=2.5",
+    "agent-client-protocol>=0.8",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.maturin]
+manifest-path = "../pybridge/Cargo.toml"
+python-source = "src"
+python-packages = ["eisen_agent"]

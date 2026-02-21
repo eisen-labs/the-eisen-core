@@ -23,13 +23,15 @@ use eisen_core::parser::tree::SymbolTree;
 use eisen_core::proxy;
 use eisen_core::tcp::{self, WireLine};
 use eisen_core::tracker::ContextTracker;
-use eisen_core::types::TrackerConfig;
+use eisen_core::types::{TrackerConfig, ZoneConfig};
 
 /// Parsed CLI arguments.
 struct Args {
     port: u16,
     agent_id: Option<String>,
     session_id: Option<String>,
+    zone_patterns: Vec<String>,
+    deny_patterns: Vec<String>,
     agent_command: String,
     agent_args: Vec<String>,
 }
@@ -77,12 +79,14 @@ fn parse_command() -> Result<Command> {
 fn parse_observe_args(raw: &[String]) -> Result<Args> {
     // Find the "observe" subcommand
     if raw.is_empty() || raw[0] != "observe" {
-        bail!("Usage: eisen-core observe [--port N] [--agent-id ID] [--session-id ID] -- <command> [args...]");
+        bail!("Usage: eisen-core observe [--port N] [--agent-id ID] [--session-id ID] [--zone PATTERN]... [--deny PATTERN]... -- <command> [args...]");
     }
 
     let mut port: u16 = tcp::DEFAULT_PORT;
     let mut agent_id: Option<String> = None;
     let mut session_id: Option<String> = None;
+    let mut zone_patterns: Vec<String> = Vec::new();
+    let mut deny_patterns: Vec<String> = Vec::new();
     let mut i = 1; // skip "observe"
 
     // Parse flags before "--"
@@ -99,6 +103,22 @@ fn parse_observe_args(raw: &[String]) -> Result<Args> {
             "--session-id" => {
                 i += 1;
                 session_id = raw.get(i).cloned();
+            }
+            "--zone" => {
+                i += 1;
+                if let Some(pattern) = raw.get(i) {
+                    zone_patterns.push(pattern.clone());
+                } else {
+                    bail!("Missing value after --zone");
+                }
+            }
+            "--deny" => {
+                i += 1;
+                if let Some(pattern) = raw.get(i) {
+                    deny_patterns.push(pattern.clone());
+                } else {
+                    bail!("Missing value after --deny");
+                }
             }
             other => bail!("Unknown flag: {other}"),
         }
@@ -121,6 +141,8 @@ fn parse_observe_args(raw: &[String]) -> Result<Args> {
         port,
         agent_id,
         session_id,
+        zone_patterns,
+        deny_patterns,
         agent_command,
         agent_args,
     })
@@ -151,6 +173,20 @@ async fn main() -> Result<()> {
                 tracker.set_session_id(sid.clone());
             }
             let tracker = Arc::new(Mutex::new(tracker));
+
+            // Build zone config if --zone flags were provided
+            let zone_config = if !args.zone_patterns.is_empty() {
+                let mut config = ZoneConfig::new(args.zone_patterns);
+                config.denied = args.deny_patterns;
+                debug!(
+                    allowed = ?config.allowed,
+                    denied = ?config.denied,
+                    "zone enforcement enabled"
+                );
+                Some(Arc::new(config))
+            } else {
+                None
+            };
 
             // Bind TCP listener for graph UI clients
             let listener = TcpListener::bind(format!("127.0.0.1:{}", args.port)).await?;
@@ -185,8 +221,12 @@ async fn main() -> Result<()> {
 
             // Spawn downstream proxy (agent stdout -> editor stdout)
             let down_tracker = tracker.clone();
+            let down_zone = zone_config.clone();
+            let down_tx = delta_tx.clone();
             let downstream = tokio::spawn(async move {
-                if let Err(e) = proxy::downstream_task(down_tracker, agent_stdout).await {
+                if let Err(e) =
+                    proxy::downstream_task(down_tracker, agent_stdout, down_zone, down_tx).await
+                {
                     eprintln!("eisen-core downstream error: {e}");
                 }
             });

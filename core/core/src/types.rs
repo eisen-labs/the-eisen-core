@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // ---------------------------------------------------------------------------
 // Action — the type of file access observed from ACP messages
@@ -18,6 +19,8 @@ pub enum Action {
     Write,
     /// Agent searched (grep/glob — path is a directory)
     Search,
+    /// Agent attempted out-of-zone file access (blocked by proxy)
+    Blocked,
 }
 
 // ---------------------------------------------------------------------------
@@ -131,6 +134,181 @@ impl Default for TrackerConfig {
             context_turns: 3,
             compaction_threshold: 0.5,
             decay_rate: 0.95,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Zone configuration — blocker zone enforcement (Phase 3)
+// ---------------------------------------------------------------------------
+
+/// Zone configuration for agent file access enforcement.
+///
+/// When a zone is configured, the proxy blocks file reads/writes outside
+/// the allowed patterns. Denied patterns take priority over allowed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZoneConfig {
+    /// Glob patterns for allowed paths (e.g., ["src/ui/**", "shared/**"])
+    pub allowed: Vec<String>,
+    /// Glob patterns for explicitly denied paths (e.g., ["**/.env"])
+    pub denied: Vec<String>,
+}
+
+impl ZoneConfig {
+    /// Create a new ZoneConfig with allowed patterns only.
+    pub fn new(allowed: Vec<String>) -> Self {
+        Self {
+            allowed,
+            denied: Vec::new(),
+        }
+    }
+
+    /// Check if a path is permitted under this zone configuration.
+    ///
+    /// A path is allowed if:
+    /// 1. It matches at least one allowed pattern, AND
+    /// 2. It does NOT match any denied pattern (denied overrides allowed)
+    ///
+    /// Paths are matched against glob patterns using a simple glob matcher.
+    /// Both the path and patterns are compared after stripping any leading `/`.
+    pub fn is_allowed(&self, path: &str) -> bool {
+        let normalized = path.strip_prefix('/').unwrap_or(path);
+
+        // Denied patterns take priority
+        for pattern in &self.denied {
+            let pat = pattern.strip_prefix('/').unwrap_or(pattern);
+            if glob_match(pat, normalized) {
+                return false;
+            }
+        }
+
+        // Must match at least one allowed pattern
+        for pattern in &self.allowed {
+            let pat = pattern.strip_prefix('/').unwrap_or(pattern);
+            if glob_match(pat, normalized) {
+                return true;
+            }
+        }
+
+        false
+    }
+}
+
+/// Simple glob matching supporting `*` (single segment) and `**` (any depth).
+///
+/// This is a minimal implementation sufficient for workspace path matching.
+/// Supports patterns like:
+///   - `src/ui/**`       matches `src/ui/foo.ts`, `src/ui/sub/bar.tsx`
+///   - `*.config.js`     matches `eslint.config.js`
+///   - `package.json`    matches `package.json` exactly
+///   - `**/.env`         matches `.env`, `sub/.env`, `a/b/.env`
+fn glob_match(pattern: &str, path: &str) -> bool {
+    glob_match_impl(
+        &pattern.split('/').collect::<Vec<_>>(),
+        &path.split('/').collect::<Vec<_>>(),
+    )
+}
+
+fn glob_match_impl(pattern_parts: &[&str], path_parts: &[&str]) -> bool {
+    if pattern_parts.is_empty() {
+        return path_parts.is_empty();
+    }
+
+    let pat = pattern_parts[0];
+
+    if pat == "**" {
+        // "**" can match zero or more path segments
+        // Try matching remaining pattern against every suffix of the path
+        for i in 0..=path_parts.len() {
+            if glob_match_impl(&pattern_parts[1..], &path_parts[i..]) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    if path_parts.is_empty() {
+        return false;
+    }
+
+    // Match single segment (supports `*` as wildcard within segment)
+    if segment_match(pat, path_parts[0]) {
+        glob_match_impl(&pattern_parts[1..], &path_parts[1..])
+    } else {
+        false
+    }
+}
+
+/// Match a single path segment against a pattern segment.
+/// Supports `*` as a wildcard matching any characters within the segment.
+fn segment_match(pattern: &str, segment: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    if !pattern.contains('*') {
+        return pattern == segment;
+    }
+
+    // Split pattern by '*' and match parts
+    let parts: Vec<&str> = pattern.split('*').collect();
+    let mut pos = 0;
+
+    for (i, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        if let Some(found) = segment[pos..].find(part) {
+            if i == 0 && found != 0 {
+                // First part must match at the start
+                return false;
+            }
+            pos += found + part.len();
+        } else {
+            return false;
+        }
+    }
+
+    // If pattern doesn't end with *, remaining segment must be consumed
+    if !pattern.ends_with('*') {
+        return pos == segment.len();
+    }
+
+    true
+}
+
+// ---------------------------------------------------------------------------
+// BlockedAccess — wire message for out-of-zone access attempts
+// ---------------------------------------------------------------------------
+
+/// Notification broadcast when the proxy blocks an out-of-zone file access.
+///
+/// Sent over TCP so the orchestrator (Python) can detect blocked attempts
+/// and route them through the A2A router.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockedAccess {
+    #[serde(rename = "type")]
+    pub msg_type: String, // always "blocked"
+    pub agent_id: String,
+    pub session_id: String,
+    pub path: String,
+    /// "read" or "write"
+    pub action: String,
+    pub timestamp_ms: u64,
+}
+
+impl BlockedAccess {
+    pub fn new(agent_id: &str, session_id: &str, path: &str, action: &str) -> Self {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        Self {
+            msg_type: "blocked".to_string(),
+            agent_id: agent_id.to_string(),
+            session_id: session_id.to_string(),
+            path: path.to_string(),
+            action: action.to_string(),
+            timestamp_ms: ts,
         }
     }
 }

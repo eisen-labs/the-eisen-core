@@ -198,6 +198,7 @@ async fn action_serialization() {
         ("/c", Action::Read, "read"),
         ("/d", Action::Write, "write"),
         ("/e", Action::Search, "search"),
+        ("/f", Action::Blocked, "blocked"),
     ];
 
     {
@@ -421,6 +422,46 @@ async fn multiple_clients_same_data() {
     // Both should have the same file
     assert!(snap1["nodes"]["/shared.rs"].is_object());
     assert!(snap2["nodes"]["/shared.rs"].is_object());
+}
+
+/// Validate BlockedAccess wire message format.
+#[tokio::test]
+async fn blocked_access_wire_format() {
+    let srv = TestServer::start().await;
+    let mut client = srv.connect().await;
+    let _snap = client.read_msg().await;
+
+    // Broadcast a BlockedAccess message directly
+    let blocked =
+        eisen_core::types::BlockedAccess::new("agent-0", "sess_1", "/core/auth.rs", "read");
+    tcp::broadcast_line(&srv.delta_tx, &blocked);
+
+    let msg = client.read_msg().await;
+    assert_eq!(msg["type"], "blocked");
+    assert_eq!(msg["agent_id"], "agent-0");
+    assert_eq!(msg["session_id"], "sess_1");
+    assert_eq!(msg["path"], "/core/auth.rs");
+    assert_eq!(msg["action"], "read");
+    assert!(msg["timestamp_ms"].is_u64(), "timestamp_ms must be u64");
+    assert!(
+        msg["timestamp_ms"].as_u64().unwrap() > 0,
+        "timestamp_ms must be non-zero"
+    );
+}
+
+/// Validate BlockedAccess serialization round-trip.
+#[tokio::test]
+async fn blocked_access_round_trip() {
+    let blocked =
+        eisen_core::types::BlockedAccess::new("test-agent", "sess_2", "/secret/.env", "write");
+    let json = serde_json::to_string(&blocked).unwrap();
+    let parsed: eisen_core::types::BlockedAccess = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed.msg_type, "blocked");
+    assert_eq!(parsed.agent_id, "test-agent");
+    assert_eq!(parsed.session_id, "sess_2");
+    assert_eq!(parsed.path, "/secret/.env");
+    assert_eq!(parsed.action, "write");
+    assert_eq!(parsed.timestamp_ms, blocked.timestamp_ms);
 }
 
 /// Validate ndJSON framing: each message is exactly one line.
