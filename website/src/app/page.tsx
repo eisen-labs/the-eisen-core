@@ -3,8 +3,8 @@ import WaitlistForm from '@/components/waitlist-form';
 
 export default function Home() {
   return (
-    <>
-      <div className="flex min-h-screen flex-col justify-center px-8 py-6 md:px-24 lg:px-32">
+    <div className="flex min-h-screen flex-col">
+      <div className="flex flex-1 flex-col justify-center px-8 py-6 md:px-24 lg:px-32">
         <h1 className="mb-6 font-serif text-4xl sm:text-5xl md:text-6xl">
           See your AI agents work.
         </h1>
@@ -35,9 +35,9 @@ export default function Home() {
         </div>
         <WaitlistForm />
       </div>
-      <div className="text-foreground/50 fixed right-6 bottom-6 text-sm">
+      <div className="text-foreground/50 px-8 pb-6 text-right text-sm md:px-24 lg:px-32">
         &copy; {new Date().getFullYear()} EisenLabs. All rights reserved.
       </div>
-    </>
+    </div>
   );
 }
