@@ -3,16 +3,21 @@
 import Image from 'next/image';
 
 interface LogoMarqueeProps {
-  items: { src: string; alt: string; height?: number; offsetY?: number }[];
-  speed?: number;
+  items: { src: string; alt: string; width: number; height: number; offsetY?: number }[];
+  pixelsPerSecond?: number;
 }
 
-export default function LogoMarquee({ items, speed = 30 }: LogoMarqueeProps) {
+const ITEM_PADDING = 48;
+
+export default function LogoMarquee({ items, pixelsPerSecond = 40 }: LogoMarqueeProps) {
+  const contentWidth = items.reduce((sum, item) => sum + item.width + ITEM_PADDING, 0);
+  const duration = contentWidth / pixelsPerSecond;
+
   return (
     <div className="relative overflow-hidden select-none">
       <div
         className="marquee flex w-max items-center will-change-transform"
-        style={{ animationDuration: `${speed}s` }}
+        style={{ animationDuration: `${duration}s` }}
       >
         {[0, 1].map((copy) =>
           items.map((item, i) => (
@@ -24,11 +29,9 @@ export default function LogoMarquee({ items, speed = 30 }: LogoMarqueeProps) {
               <Image
                 src={item.src}
                 alt={item.alt}
-                width={0}
-                height={item.height ?? 24}
-                sizes="200px"
+                width={item.width}
+                height={item.height}
                 className="opacity-80 grayscale transition-all duration-300 ease-out hover:opacity-100 hover:grayscale-0"
-                style={{ width: 'auto', height: item.height ?? 24 }}
               />
             </div>
           )),

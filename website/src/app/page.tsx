@@ -26,10 +26,10 @@ export default function Home() {
         <div className="mb-10 max-w-xl">
           <LogoMarquee
             items={[
-              { src: '/brands/anthropic.svg', alt: 'Anthropic', height: 30 },
-              { src: '/brands/openai.svg', alt: 'OpenAI', height: 40, offsetY: 4 },
-              { src: '/brands/cursor.svg', alt: 'Cursor', height: 30 },
-              { src: '/brands/opencode.svg', alt: 'OpenCode', height: 40 },
+              { src: '/brands/anthropic.svg', alt: 'Anthropic', width: 267, height: 30 },
+              { src: '/brands/openai.svg', alt: 'OpenAI', width: 148, height: 40, offsetY: 4 },
+              { src: '/brands/cursor.svg', alt: 'Cursor', width: 178, height: 30 },
+              { src: '/brands/opencode.svg', alt: 'OpenCode', width: 223, height: 40 },
             ]}
           />
         </div>

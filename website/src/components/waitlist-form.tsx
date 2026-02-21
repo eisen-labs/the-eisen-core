@@ -21,13 +21,17 @@ export default function WaitlistForm() {
   }
 
   return (
-    <div className="h-9">
+    <div>
       {done ? (
         <p className="animate-in fade-in flex h-9 items-center text-sm duration-300">
           You&apos;re on the list. We&apos;ll be in touch.
         </p>
       ) : (
-        <form onSubmit={submit} noValidate className="flex h-9 items-center gap-2">
+        <form
+          onSubmit={submit}
+          noValidate
+          className="flex flex-col items-start gap-2 sm:flex-row sm:items-center"
+        >
           <input
             type="email"
             value={email}
