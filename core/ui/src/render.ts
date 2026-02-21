@@ -1,17 +1,8 @@
 // @ts-expect-error no type declarations
 import { forceCollide, forceLink, forceManyBody } from "d3-force-3d";
 import ForceGraph from "force-graph";
-import { drawLabelBubble, drawRegionLabel as paintRegionLabel } from "./region-draw";
-import {
-  alignPolygon,
-  convexHull,
-  expandPolygon,
-  lerpPolygon,
-  type Point,
-  pointInPolygon,
-  polygonArea,
-  resamplePolygon,
-} from "./region-geometry";
+import { drawRegionLabel as paintRegionLabel } from "./region-draw";
+import { convexHull, expandPolygon, type Point, pointInPolygon, polygonArea, resamplePolygon } from "./region-geometry";
 import {
   type AgentInfo,
   deriveParent,
@@ -19,28 +10,9 @@ import {
   getNodeDisplayInfo,
   type NodeKind,
   type State,
+  type ViewMode,
 } from "./state";
 import {
-  AGENT_RING_GAP,
-  AGENT_RING_OFFSET,
-  AGENT_RING_WIDTH,
-  BACKGROUND,
-  CALL_LINK_COLOR,
-  CALL_LINK_WIDTH,
-  CALLER_STROKE,
-  COOLDOWN_TICKS,
-  FORCE_CHARGE,
-  FORCE_CHARGE_DISTANCE_MAX,
-  FORCE_CHARGE_FOLDER,
-  FORCE_CHARGE_ROOT,
-  FORCE_COLLIDE_FOLDER_EXTRA,
-  FORCE_COLLIDE_ITERATIONS,
-  FORCE_COLLIDE_PADDING,
-  FORCE_COLLIDE_STRENGTH,
-  FORCE_LINK_DISTANCE,
-  FORCE_LINK_DISTANCE_FOLDER,
-  FORCE_LINK_DISTANCE_SYMBOL,
-  FORCE_LINK_STRENGTH,
   getFolderBg,
   getFolderBgReferenced,
   getFolderBgSelected,
@@ -50,37 +22,9 @@ import {
   getNodeColor,
   getNodeStroke,
   getRegionKey,
-  IN_CONTEXT_OVERLAY,
-  LABEL_BASE_FONT,
-  LABEL_BG,
-  LABEL_FG,
-  LABEL_LINE_HEIGHT,
-  LABEL_MIN_FONT,
-  LABEL_MIN_SCALE,
-  LABEL_OFFSET_Y,
-  LEGEND_BG,
-  LEGEND_BORDER,
-  LEGEND_CORNER_RADIUS,
-  LEGEND_FONT_SIZE,
-  LEGEND_PADDING,
-  LEGEND_ROW_HEIGHT,
-  LEGEND_TEXT,
-  LEGEND_TEXT_DIM,
-  LEGEND_WIDTH,
-  LINK_COLOR,
-  LINK_WIDTH,
-  NODE_STROKE,
-  NODE_STROKE_WIDTH,
   nodeRadius,
   nodeVal,
-  SELECTED_STROKE,
-  SELECTED_STROKE_WIDTH,
-  VELOCITY_DECAY,
-  WRITE_OVERLAY,
-  WRITE_STROKE,
-  ZOOM_FIT_DELAY,
-  ZOOM_FIT_DURATION,
-  ZOOM_FIT_PADDING,
+  palette,
 } from "./theme";
 
 interface GraphNode {
@@ -113,8 +57,6 @@ interface RegionInputPoint extends Point {
 
 interface RegionLayer {
   points: Point[];
-  bornAt: number;
-  lastSeenAt: number;
 }
 
 interface RegionBubble {
@@ -130,15 +72,6 @@ interface RegionLabelDraw {
   alpha: number;
   label: string;
 }
-
-interface NodeLabelDraw {
-  text: string;
-  cx: number;
-  bottom: number;
-  scale: number;
-}
-
-type ViewMode = 0 | 1 | 2;
 
 type Graph = any;
 
@@ -166,15 +99,12 @@ export class Renderer {
   private selectedId: string | null = null;
   private selectedIds = new Set<string>();
   private callerIds = new Set<string>();
-  private showCallerLabels = false;
   private selectedRegionKeys = new Set<string>();
   private referencedRegionKeys = new Set<string>();
   private callEdges: Array<{ from: string; to: string }> = [];
   private regionLabelDraws: RegionLabelDraw[] = [];
-  private nodeLabelDraws: NodeLabelDraw[] = [];
   private hoveredRegionKey: string | null = null;
   private pointerScreen: Point | null = null;
-  private regionVisibility = new Map<string, number>();
   private regionLayers = new Map<string, RegionLayer>();
   private viewMode: ViewMode = 0;
   private activeNodeIds = new Set<string>();
@@ -188,24 +118,20 @@ export class Renderer {
   private agents: AgentInfo[] = [];
   private visibleAgents = new Set<string>();
   private agentFilterActive = false;
-  private legendBounds: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  } | null = null;
-  private legendRowBounds: Array<{
-    displayName: string;
-    y: number;
-    height: number;
-  }> = [];
+  private depsMode = false;
+  private depsVisibleIds = new Set<string>();
+  private onHoverCallback?: (id: string | null, screenX?: number, screenY?: number) => void;
   private static readonly ACTIVE_LINK_DISTANCE_FACTOR = 0.9;
   private static readonly ACTIVE_LINK_STRENGTH_FACTOR = 2.0;
   private static readonly ACTIVE_CHARGE_FACTOR = 0.7;
   private static readonly ACTIVE_CHARGE_DISTANCE_FACTOR = 0.75;
   private static readonly ACTIVE_COLLIDE_FACTOR = 0.95;
 
-  constructor(container: HTMLElement) {
+  constructor(
+    container: HTMLElement,
+    opts?: { onHover?: (id: string | null, screenX?: number, screenY?: number) => void },
+  ) {
+    this.onHoverCallback = opts?.onHover;
     this.graph = this.createGraph(container);
     this.bindPointerEvents(container);
     new ResizeObserver(() => {
@@ -222,7 +148,18 @@ export class Renderer {
   }
 
   cycleViewMode(): void {
+    if (this.depsMode) return;
     this.viewMode = ((this.viewMode + 1) % 3) as ViewMode;
+  }
+
+  toggleDepsMode(): boolean {
+    this.depsMode = !this.depsMode;
+    this.viewMode = 2 as ViewMode;
+    return this.depsMode;
+  }
+
+  getDepsMode(): boolean {
+    return this.depsMode;
   }
 
   private bindPointerEvents(container: HTMLElement): void {
@@ -278,16 +215,6 @@ export class Renderer {
     return null;
   }
 
-  private isSelectedBranchStructureLink(link: any): boolean {
-    if (!this.selectedId || link?.type !== "structure") return false;
-    const sourceId = this.linkEndpointId(link.source);
-    const targetId = this.linkEndpointId(link.target);
-    if (!sourceId || !targetId) return false;
-    if (!this.selectedIds.has(sourceId) || !this.selectedIds.has(targetId)) return false;
-    const prefix = `${this.selectedId}::`;
-    return sourceId === this.selectedId || sourceId.startsWith(prefix);
-  }
-
   private isNodeActive(id: string): boolean {
     return this.activeNodeIds.has(id);
   }
@@ -298,7 +225,6 @@ export class Renderer {
 
   private nodeAlpha(id: string): number {
     if (this.viewMode === 1 && !this.isNodeActive(id)) return 0.15;
-    // Agent filter dimming — dim nodes that only belong to hidden agents
     if (this.agentFilterActive) {
       const gn = this.nodeMap.get(id);
       if (gn?.agentHeat && Object.keys(gn.agentHeat).length > 0) {
@@ -363,15 +289,14 @@ export class Renderer {
   private getLinkColor(link: any): string {
     if (!this.isLinkVisible(link)) return "rgba(0,0,0,0)";
     const alpha = this.linkAlpha(link);
-    if (link.type === "call") return this.colorWithAlpha(CALL_LINK_COLOR, alpha);
-    const base = this.isSelectedBranchStructureLink(link) ? SELECTED_STROKE : LINK_COLOR;
-    return this.colorWithAlpha(base, alpha);
+    if (link.type === "call") return this.colorWithAlpha(palette.link.callColor, alpha);
+    return this.colorWithAlpha(palette.link.color, alpha);
   }
 
   private getLinkWidth(link: any): number {
     if (!this.isLinkVisible(link)) return 0;
-    if (link.type === "call") return CALL_LINK_WIDTH;
-    return this.isSelectedBranchStructureLink(link) ? SELECTED_STROKE_WIDTH : LINK_WIDTH;
+    if (link.type === "call") return palette.link.callWidth;
+    return palette.link.width;
   }
 
   private buildViewData(): {
@@ -381,6 +306,22 @@ export class Renderer {
   } {
     const activeIds = [...this.activeNodeIds].filter((id) => this.nodeMap.has(id)).sort();
     const activeSig = activeIds.join(",");
+
+    if (this.depsMode && this.depsVisibleIds.size > 0) {
+      const idSet = this.depsVisibleIds;
+      this.viewNodeIds = idSet;
+      const depsSig = [...idSet].sort().join(",");
+      const nodes = [...idSet].map((id) => this.nodeMap.get(id)).filter((n): n is GraphNode => !!n);
+      const links: GraphLink[] = [];
+      for (const l of this.links) {
+        const source = this.linkEndpointId(l.source);
+        const target = this.linkEndpointId(l.target);
+        if (source == null || target == null) continue;
+        if (!idSet.has(source) || !idSet.has(target)) continue;
+        links.push({ source, target, type: l.type });
+      }
+      return { nodes, links, signature: `deps:${depsSig}` };
+    }
 
     if (this.viewMode !== 0) {
       const allIds = new Set(this.nodes.map((n) => n.id));
@@ -415,13 +356,14 @@ export class Renderer {
   private createGraph(container: HTMLElement): Graph {
     return (ForceGraph as any)()(container)
       .autoPauseRedraw(false)
-      .backgroundColor(BACKGROUND)
+      .backgroundColor(palette.background)
+      .maxZoom(2)
       .nodeId("id")
-      .nodeLabel("name")
+      .nodeLabel("")
       .nodeVal((n: any) => nodeVal(n.kind))
       .linkColor((l: any) => this.getLinkColor(l))
       .linkWidth((l: any) => this.getLinkWidth(l))
-      .cooldownTicks(COOLDOWN_TICKS)
+      .cooldownTicks(palette.force.cooldownTicks)
       .d3Force(
         "link",
         forceLink()
@@ -429,11 +371,11 @@ export class Renderer {
             if (l.type === "call") return 0;
             const sourceKind = l.source?.kind as NodeKind | undefined;
             const targetKind = l.target?.kind as NodeKind | undefined;
-            let base = FORCE_LINK_DISTANCE;
+            let base = palette.force.linkDistance;
             if (sourceKind === "folder" || targetKind === "folder") {
-              base = FORCE_LINK_DISTANCE_FOLDER;
+              base = palette.force.linkDistanceFolder;
             } else if (targetKind === "class" || targetKind === "method" || targetKind === "function") {
-              base = FORCE_LINK_DISTANCE_SYMBOL;
+              base = palette.force.linkDistanceSymbol;
             }
             if (this.viewMode === 0) {
               return Math.max(6, base * Renderer.ACTIVE_LINK_DISTANCE_FACTOR);
@@ -443,9 +385,9 @@ export class Renderer {
           .strength((l: any) => {
             if (l.type === "call") return 0;
             if (this.viewMode === 0) {
-              return Math.min(1.2, FORCE_LINK_STRENGTH * Renderer.ACTIVE_LINK_STRENGTH_FACTOR);
+              return Math.min(1.2, palette.force.linkStrength * Renderer.ACTIVE_LINK_STRENGTH_FACTOR);
             }
-            return FORCE_LINK_STRENGTH;
+            return palette.force.linkStrength;
           })
           .iterations(2),
       )
@@ -453,7 +395,12 @@ export class Renderer {
         "charge",
         forceManyBody()
           .strength((n: any) => {
-            const base = n.kind !== "folder" ? FORCE_CHARGE : n.id === "" ? FORCE_CHARGE_ROOT : FORCE_CHARGE_FOLDER;
+            const base =
+              n.kind !== "folder"
+                ? palette.force.charge
+                : n.id === ""
+                  ? palette.force.chargeRoot
+                  : palette.force.chargeFolder;
             if (this.viewMode === 0) {
               return base * Renderer.ACTIVE_CHARGE_FACTOR;
             }
@@ -461,8 +408,8 @@ export class Renderer {
           })
           .distanceMax(
             this.viewMode === 0
-              ? Math.max(80, FORCE_CHARGE_DISTANCE_MAX * Renderer.ACTIVE_CHARGE_DISTANCE_FACTOR)
-              : FORCE_CHARGE_DISTANCE_MAX,
+              ? Math.max(80, palette.force.chargeDistanceMax * Renderer.ACTIVE_CHARGE_DISTANCE_FACTOR)
+              : palette.force.chargeDistanceMax,
           ),
       )
       .d3Force(
@@ -471,29 +418,41 @@ export class Renderer {
           .radius((n: any) =>
             Math.max(
               1,
-              (nodeRadius(n.kind) + FORCE_COLLIDE_PADDING + (n.kind === "folder" ? FORCE_COLLIDE_FOLDER_EXTRA : 0)) *
+              (nodeRadius(n.kind) +
+                palette.force.collidePadding +
+                (n.kind === "folder" ? palette.force.collideFolderExtra : 0)) *
                 (this.viewMode === 0 ? Renderer.ACTIVE_COLLIDE_FACTOR : 1),
             ),
           )
-          .strength(FORCE_COLLIDE_STRENGTH)
-          .iterations(FORCE_COLLIDE_ITERATIONS),
+          .strength(palette.force.collideStrength)
+          .iterations(palette.force.collideIterations),
       )
       .d3Force("region-repel", this.createRegionRepelForce())
-      .d3VelocityDecay(VELOCITY_DECAY)
+      .d3VelocityDecay(palette.force.velocityDecay)
       .nodeCanvasObject((node: any, ctx: CanvasRenderingContext2D, scale: number) => this.drawNode(node, ctx, scale))
       .nodePointerAreaPaint((node: any, color: string, ctx: CanvasRenderingContext2D) =>
         this.drawHitArea(node, color, ctx),
       )
-      .onNodeClick((node: any) => window.dispatchEvent(new CustomEvent("eisen:selectNode", { detail: node.id })))
-      .onBackgroundClick(() => window.dispatchEvent(new CustomEvent("eisen:selectNode", { detail: null })))
+      .onNodeHover((node: any) => {
+        if (node && node.x != null && node.y != null) {
+          const screen = this.graph.graph2ScreenCoords(node.x, node.y);
+          this.onHoverCallback?.(node.id, screen.x, screen.y);
+        } else {
+          this.onHoverCallback?.(null);
+        }
+      })
+      .onNodeClick((node: any, event: MouseEvent) =>
+        window.dispatchEvent(new CustomEvent("eisen:selectNode", { detail: { id: node.id, metaKey: event.metaKey } })),
+      )
+      .onBackgroundClick((event: MouseEvent) =>
+        window.dispatchEvent(new CustomEvent("eisen:selectNode", { detail: { id: null, metaKey: event.metaKey } })),
+      )
       .onRenderFramePre((ctx: CanvasRenderingContext2D, scale: number) => {
         this.drawRegionBacks(ctx, scale);
         this.drawCallEdges(ctx, scale);
       })
       .onRenderFramePost((ctx: CanvasRenderingContext2D, scale: number) => {
         this.drawRegionLabelsOverlay(ctx, scale);
-        this.drawNodeLabelsOverlay(ctx);
-        this.drawLegend(ctx, ctx.canvas);
       });
   }
 
@@ -599,31 +558,19 @@ export class Renderer {
   }
 
   private drawRegionBacks(ctx: CanvasRenderingContext2D, scale: number): void {
-    const now = performance.now();
     const targets = this.computeRegionTargets(scale);
-    this.updateRegionLayers(targets, now);
+    this.updateRegionLayers(targets);
     this.updateHoveredRegionFromPointer();
     this.regionLabelDraws = [];
-    this.nodeLabelDraws = [];
 
-    const fadeSpan = 360 - 180;
     const layers = [...this.regionLayers.entries()]
       .map(([key, layer]) => ({ key, layer, area: polygonArea(layer.points) }))
       .sort((a, b) => b.area - a.area || a.key.localeCompare(b.key));
 
     for (const { key, layer } of layers) {
       if (layer.points.length < 3) continue;
-      const age = now - layer.lastSeenAt;
-      const fadeOut = age <= 180 || fadeSpan <= 0 ? 1 : Math.max(0, 1 - (age - 180) / fadeSpan);
-      if (fadeOut <= 0) continue;
 
-      const fadeIn = Math.min(1, (now - layer.bornAt) / 170);
-      const regionFade = fadeOut * fadeIn;
-      if (regionFade <= 0.01) continue;
-
-      const targetVisibility = this.hoveredRegionKey === key ? 0.15 : 1;
-      const visibility = this.nextRegionVisibility(key, targetVisibility);
-      const alpha = regionFade * visibility;
+      const alpha = this.hoveredRegionKey === key ? 0.15 : 1;
       if (alpha <= 0.01) continue;
 
       const style = this.regionStyle(key, alpha);
@@ -653,16 +600,10 @@ export class Renderer {
         scale,
         alpha: item.alpha,
         label: item.label,
-        lineHeight: LABEL_LINE_HEIGHT,
-        labelBg: LABEL_BG,
-        labelFg: LABEL_FG,
+        lineHeight: palette.label.lineHeight,
+        labelBg: palette.label.bg,
+        labelFg: palette.label.fg,
       });
-    }
-  }
-
-  private drawNodeLabelsOverlay(ctx: CanvasRenderingContext2D): void {
-    for (const label of this.nodeLabelDraws) {
-      this.drawLabel(ctx, label.text, label.cx, label.bottom, label.scale);
     }
   }
 
@@ -690,13 +631,6 @@ export class Renderer {
       fill: getFolderBg(key, fillAlpha),
       stroke: getFolderStroke(key, strokeAlpha),
     };
-  }
-
-  private nextRegionVisibility(key: string, target: number): number {
-    const current = this.regionVisibility.get(key) ?? 1;
-    const next = current + (target - current) * 0.18;
-    this.regionVisibility.set(key, next);
-    return next;
   }
 
   private collectRegionKeys(ids: Iterable<string>): Set<string> {
@@ -732,6 +666,7 @@ export class Renderer {
 
   private shouldShowRegionLabel(key: string): boolean {
     if (!this.selectedId) return true;
+    if (this.depsMode) return true;
     return this.selectedRegionKeys.has(key) || this.referencedRegionKeys.has(key);
   }
 
@@ -795,34 +730,20 @@ export class Renderer {
     };
   }
 
-  private updateRegionLayers(targets: Map<string, Point[]>, now: number): void {
+  private updateRegionLayers(targets: Map<string, Point[]>): void {
     for (const [key, target] of targets) {
       const layer = this.regionLayers.get(key);
       if (!layer) {
-        this.regionLayers.set(key, {
-          points: target.map((p) => ({ x: p.x, y: p.y })),
-          bornAt: now,
-          lastSeenAt: now,
-        });
-        continue;
+        this.regionLayers.set(key, { points: target.map((p) => ({ x: p.x, y: p.y })) });
+      } else {
+        layer.points = target.map((p) => ({ x: p.x, y: p.y }));
       }
-
-      if (now - layer.lastSeenAt > 180) {
-        layer.bornAt = now;
-      }
-
-      const aligned = alignPolygon(target, layer.points);
-      layer.points = lerpPolygon(layer.points, aligned, 0.22);
-      layer.lastSeenAt = now;
     }
 
-    for (const [key, layer] of this.regionLayers) {
+    for (const key of this.regionLayers.keys()) {
       if (targets.has(key)) continue;
-      if (now - layer.lastSeenAt > 360) {
-        this.regionLayers.delete(key);
-        this.regionVisibility.delete(key);
-        if (this.hoveredRegionKey === key) this.hoveredRegionKey = null;
-      }
+      this.regionLayers.delete(key);
+      if (this.hoveredRegionKey === key) this.hoveredRegionKey = null;
     }
   }
 
@@ -858,8 +779,8 @@ export class Renderer {
 
     ctx.save(); // preserve parent globalAlpha and stroke state
 
-    const ringRadius = radius + AGENT_RING_OFFSET;
-    const totalGap = entries.length > 1 ? entries.length * AGENT_RING_GAP : 0;
+    const ringRadius = radius + palette.agent.ringOffset;
+    const totalGap = entries.length > 1 ? entries.length * palette.agent.ringGap : 0;
     const availableAngle = Math.PI * 2 - totalGap;
     let angle = -Math.PI / 2; // start at top
 
@@ -878,176 +799,35 @@ export class Renderer {
       ctx.arc(x, y, ringRadius, angle, angle + sweep);
       ctx.strokeStyle = agent.color;
       ctx.globalAlpha = ringAlpha;
-      ctx.lineWidth = AGENT_RING_WIDTH / scale;
+      ctx.lineWidth = palette.agent.ringWidth / scale;
       ctx.stroke();
 
-      angle += sweep + (entries.length > 1 ? AGENT_RING_GAP : 0);
+      angle += sweep + (entries.length > 1 ? palette.agent.ringGap : 0);
     }
 
     ctx.restore(); // restore parent globalAlpha
   }
 
-  private drawLegend(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement): void {
-    if (this.agents.length === 0) {
-      this.legendBounds = null;
-      this.legendRowBounds = [];
-      return;
+  zoomToNode(id: string): void {
+    const node = this.nodeMap.get(id);
+    if (node?.x != null && node?.y != null) {
+      this.graph.centerAt(node.x, node.y, 400);
+      this.graph.zoom(1.5, 400);
     }
-
-    // Compute DPR so we work in CSS-pixel space for both drawing and hit-testing.
-    // The canvas may be sized at canvas.width = clientWidth * dpr by force-graph.
-    const container = canvas.parentElement;
-    const cssWidth = container?.clientWidth ?? canvas.clientWidth ?? canvas.width;
-    const cssHeight = container?.clientHeight ?? canvas.clientHeight ?? canvas.height;
-    const dpr = canvas.width > 0 && cssWidth > 0 ? canvas.width / cssWidth : 1;
-
-    const x = LEGEND_PADDING;
-    const totalRows = this.agents.length + 1; // +1 for "Show All"
-    const height = totalRows * LEGEND_ROW_HEIGHT + LEGEND_PADDING * 2;
-    const y = cssHeight - LEGEND_PADDING - height; // CSS pixels from top
-    const width = LEGEND_WIDTH;
-
-    // Store bounds in CSS pixels for hit-testing
-    this.legendBounds = { x, y, width, height };
-    this.legendRowBounds = [];
-
-    const isFiltering = this.agentFilterActive;
-
-    // Draw in canvas-pixel space: scale by DPR
-    ctx.save();
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // 1 unit = 1 CSS pixel
-
-    ctx.beginPath();
-    this.roundRect(ctx, x, y, width, height, LEGEND_CORNER_RADIUS);
-    ctx.fillStyle = LEGEND_BG;
-    ctx.fill();
-
-    // Border
-    ctx.strokeStyle = LEGEND_BORDER;
-    ctx.lineWidth = 1;
-    ctx.stroke();
-
-    // Agent rows
-    const checkSize = 5;
-    let rowY = y + LEGEND_PADDING;
-    for (const agent of this.agents) {
-      const isOn = !isFiltering || this.visibleAgents.has(agent.displayName);
-
-      this.legendRowBounds.push({
-        displayName: agent.displayName,
-        y: rowY,
-        height: LEGEND_ROW_HEIGHT,
-      });
-
-      const centerY = rowY + LEGEND_ROW_HEIGHT / 2;
-
-      // Toggle checkbox
-      const checkX = x + LEGEND_PADDING;
-      ctx.globalAlpha = 1.0;
-      ctx.strokeStyle = agent.color;
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.rect(checkX - checkSize, centerY - checkSize, checkSize * 2, checkSize * 2);
-      ctx.stroke();
-      if (isOn) {
-        ctx.fillStyle = agent.color;
-        ctx.beginPath();
-        ctx.rect(checkX - checkSize + 2, centerY - checkSize + 2, checkSize * 2 - 4, checkSize * 2 - 4);
-        ctx.fill();
-      }
-
-      // Display name
-      const textAlpha = isOn ? 1.0 : 0.35;
-      ctx.font = `${LEGEND_FONT_SIZE}px monospace`;
-      ctx.fillStyle = LEGEND_TEXT;
-      ctx.globalAlpha = textAlpha;
-      ctx.textAlign = "left";
-      ctx.textBaseline = "middle";
-      ctx.fillText(agent.displayName, x + LEGEND_PADDING + checkSize + 8, centerY);
-
-      // Status dot (connected = green filled, disconnected = hollow)
-      const statusX = x + width - LEGEND_PADDING - 8;
-      ctx.globalAlpha = textAlpha;
-      ctx.beginPath();
-      ctx.arc(statusX, centerY, 3, 0, Math.PI * 2);
-      if (agent.connected) {
-        ctx.fillStyle = "#22c55e";
-        ctx.fill();
-      } else {
-        ctx.strokeStyle = "rgba(255,255,255,0.3)";
-        ctx.lineWidth = 1;
-        ctx.stroke();
-      }
-
-      ctx.globalAlpha = 1.0;
-      rowY += LEGEND_ROW_HEIGHT;
-    }
-
-    // "Show All" row
-    this.legendRowBounds.push({
-      displayName: "__show_all__",
-      y: rowY,
-      height: LEGEND_ROW_HEIGHT,
-    });
-
-    ctx.font = `${LEGEND_FONT_SIZE}px monospace`;
-    ctx.fillStyle = isFiltering ? LEGEND_TEXT : LEGEND_TEXT_DIM;
-    ctx.textAlign = "left";
-    ctx.textBaseline = "middle";
-    ctx.fillText(isFiltering ? "Show All" : "(all visible)", x + LEGEND_PADDING, rowY + LEGEND_ROW_HEIGHT / 2);
-
-    ctx.restore();
   }
 
-  private roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
-    ctx.moveTo(x + r, y);
-    ctx.lineTo(x + w - r, y);
-    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-    ctx.lineTo(x + w, y + h - r);
-    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-    ctx.lineTo(x + r, y + h);
-    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-    ctx.lineTo(x, y + r);
-    ctx.quadraticCurveTo(x, y, x + r, y);
-    ctx.closePath();
+  zoomToFit(): void {
+    this.graph.zoomToFit(palette.zoom.fitDuration, palette.zoom.fitPadding);
   }
 
-  /**
-   * Hit-test the legend panel. Returns the display name of the clicked agent,
-   * '__show_all__' for the Show All row, or null if outside the legend.
-   */
-  handleLegendClick(canvasX: number, canvasY: number): string | null {
-    if (!this.legendBounds) return null;
-    const { x, y, width, height } = this.legendBounds;
-    if (canvasX < x || canvasX > x + width || canvasY < y || canvasY > y + height) {
-      return null;
-    }
-
-    for (const row of this.legendRowBounds) {
-      if (canvasY >= row.y && canvasY < row.y + row.height) {
-        return row.displayName;
-      }
-    }
-    return null;
+  getGraph(): Graph {
+    return this.graph;
   }
 
-  /**
-   * Update the visible agents set and agents list from state.
-   */
-  setAgents(agents: AgentInfo[]): void {
-    this.agents = agents;
-  }
-
-  setVisibleAgents(visible: Set<string>): void {
-    this.visibleAgents = visible;
-  }
-
-  getVisibleAgents(): Set<string> {
-    return this.visibleAgents;
-  }
-
-  getAgents(): AgentInfo[] {
-    return this.agents;
+  getNodeScreenPosition(id: string): { x: number; y: number } | null {
+    const node = this.nodeMap.get(id);
+    if (!node || node.x == null || node.y == null) return null;
+    return this.graph.graph2ScreenCoords(node.x, node.y);
   }
 
   private drawNode(node: GraphNode, ctx: CanvasRenderingContext2D, scale: number): void {
@@ -1072,7 +852,11 @@ export class Renderer {
     ctx.fill();
 
     if (kind !== "folder") {
-      const overlay = isWritten ? WRITE_OVERLAY : inContext && !isListed ? IN_CONTEXT_OVERLAY : null;
+      const overlay = isWritten
+        ? palette.node.writeOverlay
+        : inContext && !isListed
+          ? palette.node.inContextOverlay
+          : null;
       if (overlay) {
         ctx.beginPath();
         ctx.arc(x, y, r, 0, 2 * Math.PI);
@@ -1082,15 +866,15 @@ export class Renderer {
     }
 
     ctx.strokeStyle = isSelected
-      ? SELECTED_STROKE
+      ? palette.node.selectedStroke
       : isCaller
-        ? CALLER_STROKE
+        ? palette.node.callerStroke
         : isWritten
-          ? WRITE_STROKE
+          ? palette.node.writeStroke
           : isListed
-            ? NODE_STROKE
+            ? palette.node.stroke
             : getNodeStroke(inContext);
-    ctx.lineWidth = (isSelected ? SELECTED_STROKE_WIDTH : NODE_STROKE_WIDTH) / scale;
+    ctx.lineWidth = (isSelected ? palette.node.selectedStrokeWidth : palette.node.strokeWidth) / scale;
     ctx.stroke();
 
     // Draw agent attribution rings AFTER the node stroke so they aren't obscured
@@ -1099,41 +883,6 @@ export class Renderer {
     }
 
     ctx.restore();
-
-    const showLabel =
-      (this.selectedId === id || (this.showCallerLabels && isCaller)) && name && scale > LABEL_MIN_SCALE;
-    if (showLabel) {
-      this.nodeLabelDraws.push({
-        text: name,
-        cx: x,
-        bottom: y - r - LABEL_OFFSET_Y,
-        scale,
-      });
-    }
-  }
-
-  private hasDescendants(id: string, allIds: Iterable<string>): boolean {
-    const prefix = `${id}::`;
-    for (const other of allIds) {
-      if (other.startsWith(prefix)) return true;
-    }
-    return false;
-  }
-
-  private drawLabel(ctx: CanvasRenderingContext2D, text: string, cx: number, bottom: number, scale: number): void {
-    const fontSize = Math.max(LABEL_MIN_FONT, LABEL_BASE_FONT / scale);
-    ctx.font = `${fontSize}px sans-serif`;
-
-    const w = ctx.measureText(text).width;
-    const h = fontSize * LABEL_LINE_HEIGHT;
-    const pad = 1 / scale;
-    const boxH = h + pad * 2;
-    drawLabelBubble(ctx, cx - w / 2 - pad, bottom - boxH, w + pad * 2, boxH, LABEL_BG);
-
-    ctx.fillStyle = LABEL_FG;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(text, cx, bottom - boxH / 2);
   }
 
   private drawHitArea(node: GraphNode, color: string, ctx: CanvasRenderingContext2D): void {
@@ -1147,7 +896,7 @@ export class Renderer {
 
   private drawCallEdges(ctx: CanvasRenderingContext2D, scale: number): void {
     if (this.callEdges.length === 0) return;
-    ctx.lineWidth = CALL_LINK_WIDTH / scale;
+    ctx.lineWidth = palette.link.callWidth / scale;
 
     for (const { from, to } of this.callEdges) {
       if (this.viewMode === 0 && (!this.isNodeVisible(from) || !this.isNodeVisible(to))) continue;
@@ -1156,7 +905,7 @@ export class Renderer {
       if (a?.x == null || a?.y == null || b?.x == null || b?.y == null) continue;
 
       const alpha = this.viewMode === 1 && !(this.isNodeActive(from) || this.isNodeActive(to)) ? 0.12 : 1;
-      ctx.strokeStyle = this.colorWithAlpha(CALL_LINK_COLOR, alpha);
+      ctx.strokeStyle = this.colorWithAlpha(palette.link.callColor, alpha);
 
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
@@ -1197,6 +946,31 @@ export class Renderer {
     // If the node has no per-agent data at all (baseline), it's visible to all
     if (!node.agentHeat && !node.agentContext) return true;
     return false;
+  }
+
+  private computeDepsVisible(state: State): Set<string> {
+    const ids = new Set<string>();
+
+    for (const id of this.selectedIds) ids.add(id);
+    for (const id of this.callerIds) ids.add(id);
+
+    for (const id of [...ids]) {
+      for (const ex of this.expandSelection(id, state.nodes.keys())) ids.add(ex);
+    }
+
+    for (const id of [...ids]) {
+      let parent = deriveParent(id);
+      while (parent !== id) {
+        ids.add(parent);
+        if (parent === "") break;
+        const next = deriveParent(parent);
+        if (next === parent) break;
+        parent = next;
+      }
+    }
+    ids.add("");
+
+    return ids;
   }
 
   private computeActiveNodeIds(state: State, folders: Set<string>): Set<string> {
@@ -1254,7 +1028,7 @@ export class Renderer {
     return out;
   }
 
-  render(state: State, selectedId?: string | null): void {
+  render(state: State, selectedId?: string | null, selectedIds?: Set<string>): void {
     this.selectedId = selectedId ?? null;
     this.agents = state.agents;
     this.visibleAgents = state.visibleAgents;
@@ -1264,31 +1038,48 @@ export class Renderer {
     this.activeNodeIds = this.computeActiveNodeIds(state, folders);
     this.activeRegionKeys = this.collectRegionKeys(this.activeNodeIds);
 
-    this.selectedIds = this.selectedId ? this.expandSelection(this.selectedId, state.nodes.keys()) : new Set();
+    if (selectedIds && selectedIds.size > 0) {
+      this.selectedIds = new Set(selectedIds);
+      for (const id of selectedIds) {
+        for (const expanded of this.expandSelection(id, state.nodes.keys())) {
+          this.selectedIds.add(expanded);
+        }
+      }
+    } else {
+      this.selectedIds = this.selectedId ? this.expandSelection(this.selectedId, state.nodes.keys()) : new Set();
+    }
     this.callerIds = new Set(
       this.selectedIds.size > 0 ? state.calls.filter((c) => this.selectedIds.has(c.to)).map((c) => c.from) : [],
     );
-    this.showCallerLabels =
-      !!this.selectedId &&
-      this.selectedId.includes("::") &&
-      !this.hasDescendants(this.selectedId, state.nodes.keys()) &&
-      this.callerIds.size > 0;
     this.selectedRegionKeys = this.collectRegionKeys(this.selectedIds);
     this.referencedRegionKeys = this.collectRegionKeys(this.callerIds);
     for (const key of this.selectedRegionKeys) this.referencedRegionKeys.delete(key);
 
     const structureChanged = this.syncNodes(state, folders);
     if (structureChanged) this.rebuildLinks();
+
+    if (this.depsMode && this.selectedIds.size > 0) {
+      this.depsVisibleIds = this.computeDepsVisible(state);
+      this.callEdges = state.calls
+        .filter((c) => this.selectedIds.has(c.to) && this.nodeMap.has(c.from) && this.nodeMap.has(c.to))
+        .map((c) => ({ from: c.from, to: c.to }));
+    } else {
+      this.depsVisibleIds.clear();
+      this.callEdges =
+        this.selectedIds.size > 0
+          ? state.calls
+              .filter((c) => this.selectedIds.has(c.to) && this.nodeMap.has(c.from) && this.nodeMap.has(c.to))
+              .map((c) => ({ from: c.from, to: c.to }))
+          : [];
+    }
+
     const viewData = this.buildViewData();
+
     const viewChanged = this.viewSignature !== viewData.signature;
     const modeChanged = this.lastAppliedViewMode !== this.viewMode;
-
-    this.callEdges =
-      this.selectedIds.size > 0
-        ? state.calls
-            .filter((c) => this.selectedIds.has(c.to) && this.nodeMap.has(c.from) && this.nodeMap.has(c.to))
-            .map((c) => ({ from: c.from, to: c.to }))
-        : [];
+    const depsChanged =
+      viewChanged &&
+      (this.depsMode || viewData.signature.startsWith("deps:") !== this.viewSignature.startsWith("deps:"));
 
     if (structureChanged || viewChanged) {
       this.viewSignature = viewData.signature;
@@ -1300,16 +1091,19 @@ export class Renderer {
         this.graph.graphData({ nodes: viewData.nodes, links: viewData.links });
         if (isFirst) {
           this.initialized = true;
-          setTimeout(() => this.graph.zoomToFit(ZOOM_FIT_DURATION, ZOOM_FIT_PADDING), ZOOM_FIT_DELAY);
+          setTimeout(
+            () => this.graph.zoomToFit(palette.zoom.fitDuration, palette.zoom.fitPadding),
+            palette.zoom.fitDelay,
+          );
         }
       };
 
-      if (isFirst || modeChanged) {
+      if (isFirst || modeChanged || depsChanged) {
         if (this.pendingGraphUpdate) clearTimeout(this.pendingGraphUpdate);
         doUpdate();
-        if (modeChanged && !isFirst) {
+        if ((modeChanged || depsChanged) && !isFirst) {
           this.graph.d3ReheatSimulation();
-          setTimeout(() => this.graph.zoomToFit(Math.min(280, ZOOM_FIT_DURATION), ZOOM_FIT_PADDING), 40);
+          setTimeout(() => this.graph.zoomToFit(Math.min(280, palette.zoom.fitDuration), palette.zoom.fitPadding), 40);
         }
       } else {
         if (this.pendingGraphUpdate) clearTimeout(this.pendingGraphUpdate);

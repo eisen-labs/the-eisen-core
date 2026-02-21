@@ -1,6 +1,6 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { ensureAgentStatusLoaded } from "./acp/agents";
+import { type AgentWithStatus, ensureAgentStatusLoaded } from "./acp/agents";
 import { EisenOrchestrator } from "./orchestrator";
 import { ChatViewProvider } from "./views/chat";
 import { GraphViewProvider } from "./views/graph";
@@ -12,7 +12,9 @@ let orchestrator: EisenOrchestrator | undefined;
 export function activate(context: vscode.ExtensionContext) {
   console.log("Eisen extension is now active");
 
-  ensureAgentStatusLoaded().catch((e) => console.warn("[Eisen] Failed to probe agent availability:", e));
+  const agentsReady = ensureAgentStatusLoaded().catch((e) => {
+    console.warn("[Eisen] Failed to probe agent availability:", e);
+  });
 
   orchestrator = new EisenOrchestrator();
   graphProvider = new GraphViewProvider(context.extensionUri);
@@ -57,6 +59,69 @@ export function activate(context: vscode.ExtensionContext) {
     console.log(`[Eisen] Agent removed, remaining agents: ${orchestrator?.agentCount}`);
   };
 
+  graphProvider.onAddAgent = async (agentType) => {
+    try {
+      await chatProvider?.spawnAndConnect(agentType);
+    } catch (e) {
+      console.warn("[Eisen] Failed to spawn+connect agent:", e);
+    }
+  };
+
+  graphProvider.onChatMessage = async (text, instanceId, contextChips) => {
+    if (instanceId) {
+      chatProvider?.switchToInstanceByInstanceId(instanceId);
+    }
+    if (!chatProvider?.getActiveClient()) {
+      try {
+        await chatProvider?.spawnAndConnect();
+      } catch (e) {
+        console.warn("[Eisen] Failed to auto-spawn agent:", e);
+      }
+    }
+    await chatProvider?.sendFromGraph(text, contextChips);
+  };
+
+  graphProvider.onSwitchAgent = (instanceId) => {
+    chatProvider?.switchToInstanceByInstanceId(instanceId);
+  };
+
+  graphProvider.onModeChange = async (modeId) => {
+    await chatProvider?.handleGraphModeChange(modeId);
+  };
+
+  graphProvider.onModelChange = async (modelId) => {
+    await chatProvider?.handleGraphModelChange(modelId);
+  };
+
+  graphProvider.onFileSearch = async (query) => {
+    const results = await chatProvider?.searchFiles(query);
+    if (results) graphProvider?.relayFileSearchResults(results);
+  };
+
+  chatProvider.onAgentResponse = (response) => {
+    graphProvider?.relayChatResponse(response);
+  };
+
+  chatProvider.onStreamStart = (instanceId) => {
+    graphProvider?.relayStreamStart(instanceId);
+  };
+
+  chatProvider.onStreamChunk = (text, instanceId) => {
+    graphProvider?.relayStreamChunk(text, instanceId);
+  };
+
+  chatProvider.onStreamEnd = (instanceId) => {
+    graphProvider?.relayStreamEnd(instanceId);
+  };
+
+  chatProvider.onSessionMetadataChanged = (meta) => {
+    graphProvider?.relaySessionMetadata(meta);
+  };
+
+  chatProvider.onCommandsChanged = (commands, instanceId) => {
+    graphProvider?.relayAvailableCommands(commands, instanceId);
+  };
+
   chatProvider.onActiveClientChanged = async (client) => {
     if (!client) return;
     const agentType = client.getAgentId();
@@ -76,22 +141,24 @@ export function activate(context: vscode.ExtensionContext) {
   const ensureConnected = async (): Promise<void> => {
     const client = chatProvider?.getActiveClient();
     if (!client) return;
-    if (!client.isConnected()) {
-      await client.connect();
-    }
+    const state = client.getState();
+    if (state === "connected" || state === "connecting") return;
+    await client.connect();
   };
 
-  context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(GraphViewProvider.viewType, graphProvider, {
-      webviewOptions: { retainContextWhenHidden: true },
-    }),
-  );
-
-  context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatProvider, {
-      webviewOptions: { retainContextWhenHidden: true },
-    }),
-  );
+  // Auto-open graph panel, spawn default agent as soon as probes finish
+  graphProvider.openGraphPanel();
+  agentsReady.then(async (agents) => {
+    if (agents) {
+      const available = (agents as AgentWithStatus[]).filter((a) => a.available);
+      graphProvider?.setAvailableAgentTypes(available.map((a) => ({ id: a.id, name: a.name })));
+    }
+    try {
+      await chatProvider?.spawnAndConnect();
+    } catch (e) {
+      console.warn("[Eisen] Failed to auto-connect default agent:", e);
+    }
+  });
 
   context.subscriptions.push(
     vscode.commands.registerCommand("eisen.startChat", async () => {
@@ -162,5 +229,4 @@ export function activate(context: vscode.ExtensionContext) {
 
 export function deactivate() {
   console.log("Eisen extension deactivating");
-  // Disposal is handled by context.subscriptions
 }

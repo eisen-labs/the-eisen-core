@@ -1,141 +1,128 @@
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
+@import "tailwindcss";
+
+@theme {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-border: var(--border);
+  --color-border-subtle: var(--border-subtle);
+  --color-foreground: var(--text);
+  --color-muted: var(--text-2);
+  --color-faint: var(--text-3);
+  --color-panel: var(--panel-bg);
+  --color-accent: var(--accent);
+  --color-accent-muted: var(--accent-muted);
+
+  --font-sans: "Geist", system-ui, sans-serif;
+  --font-mono: "Geist Mono", "SF Mono", monospace;
+
+  --text-xs: var(--fs-xs);
+  --text-sm: var(--fs-sm);
+  --text-md: var(--fs-md);
+  --text-lg: var(--fs-lg);
+
+  --spacing-xs: var(--space-xs);
+  --spacing-sm: var(--space-sm);
+  --spacing-md: var(--space-md);
+  --spacing-lg: var(--space-lg);
 }
 
-html,
-body {
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
-  background: #141414;
-  border-right: 0.5px solid var(--vscode-panel-border);
+/* === Variables === */
+
+:root {
+  --fs-xs: 10px;
+  --fs-sm: 11px;
+  --fs-md: 13px;
+  --fs-lg: 15px;
+  --space-xs: 4px;
+  --space-sm: 6px;
+  --space-md: 8px;
+  --space-lg: 12px;
 }
+
+/* === Dark Tokens === */
+
+html[data-theme="dark"] {
+  --bg:            #141414;
+  --surface:       #1a1a1a;
+  --raised:        rgba(255, 255, 255, 0.06);
+  --border:        rgba(255, 255, 255, 0.08);
+  --border-subtle: rgba(255, 255, 255, 0.04);
+  --text:          rgba(255, 255, 255, 0.90);
+  --text-2:        rgba(255, 255, 255, 0.50);
+  --text-3:        rgba(255, 255, 255, 0.30);
+  --panel-bg:      rgba(20, 20, 20, 0.85);
+  --accent:        #0c8ce9;
+  --accent-muted:  rgba(12, 140, 233, 0.15);
+}
+
+/* === Light Tokens === */
+
+html[data-theme="light"] {
+  --bg:            #f0f0f0;
+  --surface:       #e6e6e6;
+  --raised:        rgba(0, 0, 0, 0.05);
+  --border:        rgba(0, 0, 0, 0.10);
+  --border-subtle: rgba(0, 0, 0, 0.05);
+  --text:          rgba(0, 0, 0, 0.85);
+  --text-2:        rgba(0, 0, 0, 0.50);
+  --text-3:        rgba(0, 0, 0, 0.30);
+  --panel-bg:      rgba(220, 220, 220, 0.85);
+  --accent:        #0c8ce9;
+  --accent-muted:  rgba(12, 140, 233, 0.10);
+}
+
+/* === Reset & Base === */
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%; height: 100%; overflow: hidden;
+  background: var(--bg);
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  line-height: 1.4;
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: var(--accent-muted); color: inherit; }
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
+
+/* === Canvas === */
 
 #graph {
-  width: 100%;
-  height: 100%;
+  position: relative;
+  overflow: hidden;
 }
 
 #graph canvas {
+  display: block;
   cursor: default;
 }
 
-.eisen-controls {
+#graph.shift-active canvas {
+  cursor: crosshair;
+}
+
+/* === Marquee === */
+
+.marquee {
   position: fixed;
-  top: 10px;
-  right: 10px;
-  display: flex;
-  align-items: center;
-  gap: 0px;
-  z-index: 20;
-}
-
-.eisen-icon-button {
-  width: 24px;
-  height: 24px;
-  padding: 2px;
-  border: 0;
-  background: transparent;
-  color: #e5e7eb;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  opacity: 0.88;
-}
-
-.eisen-icon-button-layers {
-  margin-top: 2px;
-}
-
-.eisen-icon-button:hover {
-  opacity: 1;
-}
-
-.eisen-icon-button svg {
-  width: 100%;
-  height: 100%;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-/* Node color legend (top-left) */
-.eisen-legend {
-  position: fixed;
-  top: 10px;
-  left: 10px;
-  z-index: 20;
-  background: rgba(20, 20, 20, 0.85);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 6px;
-  font-family: monospace;
-  font-size: 11px;
-  color: #e5e7eb;
-  user-select: none;
-}
-
-.eisen-legend-header {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
-  cursor: pointer;
-  opacity: 0.7;
-}
-
-.eisen-legend-header:hover {
-  opacity: 1;
-}
-
-.eisen-legend-chevron {
-  width: 10px;
-  height: 10px;
-  flex-shrink: 0;
-  transition: transform 0.15s ease;
-}
-
-.eisen-legend.collapsed .eisen-legend-chevron {
-  transform: rotate(-90deg);
-}
-
-.eisen-legend-body {
-  padding: 0 8px 6px;
-}
-
-.eisen-legend.collapsed .eisen-legend-body {
   display: none;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.04);
+  pointer-events: none;
+  z-index: 30;
 }
 
-.eisen-legend-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 18px;
-}
+/* === Keyframes === */
 
-.eisen-legend-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.eisen-legend-dot.read {
-  background: rgba(34, 197, 94, 0.7);
-  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.5);
-}
-
-.eisen-legend-dot.write {
-  background: rgba(245, 158, 11, 0.7);
-  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.5);
-}
-
-.eisen-legend-dot.faded {
-  background: rgba(255, 255, 255, 0.15);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1);
+@keyframes indicator-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1.0; }
 }

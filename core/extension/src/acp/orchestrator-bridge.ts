@@ -153,7 +153,7 @@ export class OrchestratorBridge {
       console.warn("[OrchestratorBridge] Cannot send — process not running");
       return;
     }
-    const line = JSON.stringify(command) + "\n";
+    const line = `${JSON.stringify(command)}\n`;
     this._process.stdin.write(line);
   }
 

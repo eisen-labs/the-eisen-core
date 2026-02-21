@@ -56,68 +56,13 @@
         "when": "editorTextFocus"
       }
     ],
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "eisen",
-          "title": "Eisen",
-          "icon": "$(eye)"
-        }
-      ]
-    },
-    "views": {
-      "eisen": [
-        {
-          "type": "webview",
-          "id": "eisen.graphView",
-          "name": "Graph",
-          "icon": "$(graph)",
-          "contextualTitle": "Eisen Graph"
-        },
-        {
-          "type": "webview",
-          "id": "eisen.chatView",
-          "name": "Agents",
-          "icon": "$(comment-discussion)",
-          "contextualTitle": "Eisen Agents"
-        }
-      ]
-    },
-    "menus": {
-      "view/title": [
-        {
-          "command": "eisen.newChat",
-          "when": "view == eisen.graphView",
-          "group": "navigation@1"
-        },
-        {
-          "command": "eisen.openGraph",
-          "when": "view == eisen.graphView",
-          "group": "navigation@2"
-        },
-        {
-          "command": "eisen.newChat",
-          "when": "view == eisen.chatView",
-          "group": "navigation@1"
-        },
-        {
-          "command": "eisen.openGraph",
-          "when": "view == eisen.chatView",
-          "group": "navigation@2"
-        },
-        {
-          "command": "eisen.clearChat",
-          "when": "view == eisen.chatView",
-          "group": "navigation@3"
-        }
-      ]
-    }
+    "menus": {}
   },
   "scripts": {
     "build": "pnpm run build:extension && pnpm run build:webviews && pnpm run build:media",
     "build:extension": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify",
     "build:webviews": "esbuild src/views/webview/chatMain.ts --bundle --outfile=dist/chatWebview.js --format=iife --platform=browser --minify",
-    "build:media": "mkdir -p media && cp src/styles/reset.css src/styles/vscode.css src/styles/main.css media/ && cp ../ui/dist/main.js media/graph.js 2>/dev/null || true && cp ../ui/dist/style.css media/graph.css 2>/dev/null || true",
+    "build:media": "mkdir -p media && cp src/styles/reset.css src/styles/vscode.css src/styles/main.css media/ && cd ../ui && pnpm run build",
     "dev": "npm run build",
     "clean": "rm -rf dist media"
   },

@@ -65,7 +65,7 @@ export function getDefaultAgent(): AgentConfig {
 function isCommandAvailableAsync(command: string): Promise<boolean> {
   return new Promise((resolve) => {
     const whichCmd = process.platform === "win32" ? "where.exe" : "which";
-    execFile(whichCmd, [command], { encoding: "utf8", timeout: 5000 }, (error, stdout) => {
+    execFile(whichCmd, [command], { encoding: "utf8", timeout: 2000 }, (error, stdout) => {
       if (error) {
         console.log(`[Eisen] Command "${command}" not available:`, error.message);
         resolve(false);
@@ -86,12 +86,17 @@ let cachedAgentsWithStatus: AgentWithStatus[] | null = null;
 let cachePromise: Promise<AgentWithStatus[]> | null = null;
 
 export async function refreshAgentStatus(): Promise<AgentWithStatus[]> {
-  const results = await Promise.all(
-    AGENTS.map(async (agent) => ({
-      ...agent,
-      available: await isCommandAvailableAsync(agent.command),
-    })),
+  const uniqueCommands = [...new Set(AGENTS.map((a) => a.command))];
+  const availability = new Map<string, boolean>();
+  await Promise.all(
+    uniqueCommands.map(async (cmd) => {
+      availability.set(cmd, await isCommandAvailableAsync(cmd));
+    }),
   );
+  const results = AGENTS.map((agent) => ({
+    ...agent,
+    available: availability.get(agent.command) ?? false,
+  }));
   cachedAgentsWithStatus = results;
   return results;
 }

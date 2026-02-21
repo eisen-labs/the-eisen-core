@@ -18,7 +18,7 @@ import type {
 } from "@agentclientprotocol/sdk";
 import { marked } from "marked";
 import * as vscode from "vscode";
-import { getAgent, getAgentsWithStatus } from "../acp/agents";
+import { getAgent, getAgentsWithStatus, getDefaultAgent } from "../acp/agents";
 import { ACPClient, type ContextChipData } from "../acp/client";
 import { FileSearchService } from "../fileSearchService";
 import { AGENT_COLORS } from "../orchestrator";
@@ -284,6 +284,77 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return this.activeClient;
   }
 
+  public onAgentResponse?: (response: { from: string; agent: string; text: string; instanceId?: string }) => void;
+  public onStreamStart?: (instanceId: string) => void;
+  public onStreamChunk?: (text: string, instanceId: string) => void;
+  public onStreamEnd?: (instanceId: string) => void;
+  public onSessionMetadataChanged?: (meta: { modes?: unknown; models?: unknown }) => void;
+  public onCommandsChanged?: (commands: Array<{ name: string; description?: string }>, instanceId?: string) => void;
+
+  private async ensureClientConnected(inst: AgentInstance): Promise<void> {
+    const state = inst.client.getState();
+    if (state === "connected") return;
+    if (state === "connecting") {
+      await new Promise<void>((resolve, reject) => {
+        const unsub = inst.client.setOnStateChange((s) => {
+          if (s === "connected") {
+            unsub();
+            resolve();
+          } else if (s === "disconnected") {
+            unsub();
+            reject(new Error("Connection failed"));
+          }
+        });
+      });
+      return;
+    }
+    await inst.client.connect();
+  }
+
+  public async spawnAndConnect(agentType?: string): Promise<void> {
+    this.spawnAgent(agentType);
+    const inst = this.activeInstance;
+    if (inst) await this.ensureClientConnected(inst);
+  }
+
+  public async sendFromGraph(
+    text: string,
+    contextChips?: Array<{ filePath: string; fileName: string; isDirectory?: boolean }>,
+  ): Promise<void> {
+    return this.handleUserMessage(text, contextChips);
+  }
+
+  public async searchFiles(
+    query: string,
+  ): Promise<
+    Array<{ path: string; fileName: string; relativePath: string; languageId: string; isDirectory: boolean }>
+  > {
+    return this.fileSearchService.search(query);
+  }
+
+  public switchToInstanceByInstanceId(instanceId: string): void {
+    for (const [key, inst] of this.agentInstances) {
+      if (inst.client.instanceId === instanceId) {
+        this.switchToInstance(key);
+        return;
+      }
+    }
+  }
+
+  public async handleGraphModeChange(modeId: string): Promise<void> {
+    return this.handleModeChange(modeId);
+  }
+
+  public async handleGraphModelChange(modelId: string): Promise<void> {
+    return this.handleModelChange(modelId);
+  }
+
+  public getActiveSessionMetadata(): { modes?: unknown; models?: unknown } | null {
+    const inst = this.activeInstance;
+    if (!inst) return null;
+    return inst.client.getSessionMetadata(inst.acpSessionId ?? undefined) ?? null;
+  }
+
   resolveWebviewView(
     webviewView: vscode.WebviewView,
     _context: vscode.WebviewViewResolveContext,
@@ -499,6 +570,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   public async newChat(): Promise<void> {
     await this.handleNewChat();
+  }
+
+  public spawnAgent(agentType?: string): void {
+    const type = agentType ?? getDefaultAgent().id;
+    this.handleSpawnAgent(type);
   }
 
   public clearChat(): void {
@@ -725,6 +801,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (update.content.type === "text") {
         if (inst) inst.streamingText += update.content.text;
         this.postMessage({ type: "streamChunk", text: update.content.text });
+        if (inst?.client.instanceId) this.onStreamChunk?.(update.content.text, inst.client.instanceId);
       }
     } else if (update.sessionUpdate === "tool_call") {
       this.postMessage({
@@ -763,6 +840,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         type: "availableCommands",
         commands: update.availableCommands,
       });
+      const inst = this.activeInstance;
+      if (update.availableCommands) {
+        this.onCommandsChanged?.(update.availableCommands, inst?.client.instanceId ?? undefined);
+      }
     } else if (update.sessionUpdate === "plan") {
       this.postMessage({ type: "plan", plan: { entries: update.entries } });
     } else if (update.sessionUpdate === "agent_thought_chunk") {
@@ -803,10 +884,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
 
     try {
-      if (!inst.client.isConnected()) {
-        await inst.client.connect();
-        // onDidConnect is fired by the state change listener — no explicit call needed
-      }
+      await this.ensureClientConnected(inst);
 
       if (!inst.hasAcpSession) {
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -823,6 +901,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       inst.stderrBuffer = "";
       inst.isStreaming = true;
       this.postMessage({ type: "streamStart" });
+      if (inst.client.instanceId) this.onStreamStart?.(inst.client.instanceId);
 
       const chipData: ContextChipData[] | undefined = contextChips?.map((c) => ({
         filePath: c.filePath,
@@ -846,13 +925,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           stopReason: response.stopReason,
           html: renderedHtml,
         });
+        this.onAgentResponse?.({
+          from: "agent",
+          agent: inst.label,
+          text: inst.streamingText,
+          instanceId: inst.client.instanceId ?? undefined,
+        });
       }
+      if (inst.client.instanceId) this.onStreamEnd?.(inst.client.instanceId);
       inst.streamingText = "";
     } catch (error) {
       inst.isStreaming = false;
       const errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
       this.postMessage({ type: "error", text: `Error: ${errorMessage}` });
+      this.onAgentResponse?.({
+        from: "agent",
+        agent: inst.label,
+        text: `Error: ${errorMessage}`,
+        instanceId: inst.client.instanceId ?? undefined,
+      });
       this.postMessage({ type: "streamEnd", stopReason: "error", html: "" });
+      if (inst.client.instanceId) this.onStreamEnd?.(inst.client.instanceId);
       inst.streamingText = "";
       inst.stderrBuffer = "";
     }
@@ -888,10 +981,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const inst = this.activeInstance;
     if (!inst) return;
     try {
-      if (!inst.client.isConnected()) {
-        await inst.client.connect();
-        // onDidConnect is fired by the state change listener — no explicit call needed
-      }
+      await this.ensureClientConnected(inst);
       if (!inst.hasAcpSession) {
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
         const workingDir = workspaceFolder?.uri.fsPath || process.cwd();
@@ -942,12 +1032,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const inst = this.activeInstance;
     if (!inst) return;
     const metadata = inst.client.getSessionMetadata(inst.acpSessionId ?? undefined);
-    this.postMessage({
-      type: "sessionMetadata",
+    const meta = {
       modes: metadata?.modes ?? null,
       models: metadata?.models ?? null,
       commands: metadata?.commands ?? null,
-    });
+    };
+    this.postMessage({ type: "sessionMetadata", ...meta });
+    this.onSessionMetadataChanged?.(meta);
 
     if (!inst.hasRestoredModeModel && inst.hasAcpSession) {
       inst.hasRestoredModeModel = true;

@@ -44,6 +44,7 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
 
   private liveNodes: Record<string, UiNode> = {};
   private agents: AgentInfo[] = [];
+  private availableAgentTypes: Array<{ id: string; name: string }> = [];
 
   /** Throttle delta postMessage to avoid saturating the webview IPC channel.
    *  Deltas are batched and flushed at most every DELTA_FLUSH_MS. */
@@ -209,11 +210,11 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
 
   openGraphPanel(): void {
     if (this.panel) {
-      this.panel.reveal(vscode.ViewColumn.Beside, true);
+      this.panel.reveal(vscode.ViewColumn.Active);
       return;
     }
 
-    this.panel = vscode.window.createWebviewPanel("eisen.graphPanel", "Eisen Graph", vscode.ViewColumn.Beside, {
+    this.panel = vscode.window.createWebviewPanel("eisen.graphPanel", "Eisen Graph", vscode.ViewColumn.Active, {
       enableScripts: true,
       retainContextWhenHidden: true,
       localResourceRoots: [this.extensionUri],
@@ -410,7 +411,65 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private handleWebviewMessage(msg: { type: string; path?: string; line?: number }) {
+  public onChatMessage?: (
+    text: string,
+    instanceId: string | null,
+    contextChips?: Array<{ filePath: string; fileName: string; isDirectory?: boolean }>,
+  ) => void;
+  public onAddAgent?: (agentType?: string) => void;
+  public onSwitchAgent?: (instanceId: string) => void;
+  public onModeChange?: (modeId: string) => void;
+  public onModelChange?: (modelId: string) => void;
+  public onFileSearch?: (query: string) => void;
+
+  public setAvailableAgentTypes(agents: Array<{ id: string; name: string }>): void {
+    this.availableAgentTypes = agents;
+    this.postToWebview({ method: "availableAgents", params: agents });
+  }
+
+  public relayChatResponse(response: { from: string; agent: string; text: string; instanceId?: string }): void {
+    this.postToWebview({ method: "chatMessage", params: response });
+  }
+
+  public relayStreamStart(instanceId: string): void {
+    this.postToWebview({ method: "streamStart", params: { instanceId } });
+  }
+
+  public relayStreamChunk(text: string, instanceId: string): void {
+    this.postToWebview({ method: "streamChunk", params: { text, instanceId } });
+  }
+
+  public relayStreamEnd(instanceId: string): void {
+    this.postToWebview({ method: "streamEnd", params: { instanceId } });
+  }
+
+  public relaySessionMetadata(meta: { modes?: unknown; models?: unknown }): void {
+    this.postToWebview({ method: "sessionMetadata", params: meta });
+  }
+
+  public relayFileSearchResults(
+    results: Array<{ path: string; fileName: string; relativePath: string; languageId: string; isDirectory: boolean }>,
+  ): void {
+    this.postToWebview({ method: "fileSearchResults", params: results });
+  }
+
+  public relayAvailableCommands(commands: Array<{ name: string; description?: string }>, instanceId?: string): void {
+    this.postToWebview({ method: "availableCommands", params: { commands, instanceId } });
+  }
+
+  private handleWebviewMessage(msg: {
+    type: string;
+    path?: string;
+    line?: number;
+    text?: string;
+    agent?: string;
+    agentType?: string;
+    instanceId?: string;
+    modeId?: string;
+    modelId?: string;
+    query?: string;
+    contextChips?: Array<{ filePath: string; fileName: string; isDirectory?: boolean }>;
+  }) {
     console.log(`[Graph] <- webview message: type=${msg.type}${msg.path ? `, path=${msg.path}` : ""}`);
     switch (msg.type) {
       case "openFile":
@@ -433,9 +492,32 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
           );
         }
         break;
+      case "readFile":
+        if (msg.path) {
+          const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+          const full = root ? path.join(root, msg.path) : msg.path;
+          const node = this.liveNodes[msg.path] ?? this.baselineNodes?.[msg.path];
+          vscode.workspace.openTextDocument(full).then(
+            (doc) => {
+              this.postToWebview({
+                method: "fileContent",
+                params: {
+                  path: msg.path,
+                  content: doc.getText(),
+                  startLine: node?.lines?.start,
+                },
+              });
+            },
+            (err) => console.error("[Graph] Failed to read file:", err),
+          );
+        }
+        break;
+      case "addToContext":
+        if (msg.path) {
+          console.log(`[Graph] Add to context: ${msg.path}`);
+        }
+        break;
       case "requestSnapshot":
-        // In orchestrator mode, the graph doesn't have direct TCP access.
-        // Emit the current merged state as a snapshot.
         this.postToWebview({
           method: "snapshot",
           params: {
@@ -445,6 +527,27 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
             agents: this.agents,
           },
         });
+        if (this.availableAgentTypes.length > 0) {
+          this.postToWebview({ method: "availableAgents", params: this.availableAgentTypes });
+        }
+        break;
+      case "chatMessage":
+        if (msg.text) this.onChatMessage?.(msg.text, msg.instanceId ?? null, msg.contextChips);
+        break;
+      case "fileSearch":
+        if (msg.query !== undefined) this.onFileSearch?.(msg.query);
+        break;
+      case "addAgent":
+        this.onAddAgent?.(msg.agentType as string | undefined);
+        break;
+      case "switchAgent":
+        if (msg.instanceId) this.onSwitchAgent?.(msg.instanceId);
+        break;
+      case "selectMode":
+        if (msg.modeId) this.onModeChange?.(msg.modeId);
+        break;
+      case "selectModel":
+        if (msg.modelId) this.onModelChange?.(msg.modelId);
         break;
     }
   }
@@ -461,10 +564,10 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource};">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'unsafe-eval' ${webview.cspSource}; img-src ${webview.cspSource} blob: data:;">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="${styleUri}">
-  <title>Eisen Graph</title>
+  <title>Eisen</title>
 </head>
 <body>
   <div id="graph"></div>

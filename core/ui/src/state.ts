@@ -54,6 +54,8 @@ export interface Delta {
   agents?: AgentInfo[];
 }
 
+export type ViewMode = 0 | 1 | 2;
+
 export interface State {
   seq: number;
   nodes: Map<string, Node>;
