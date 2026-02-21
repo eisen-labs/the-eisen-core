@@ -21,6 +21,8 @@ export default function Dock() {
     if (!focused || !navRef.current) return setHighlight((h) => ({ ...h, opacity: 0 }));
 
     const btn = navRef.current.querySelector(`[data-item="${focused}"]`) as HTMLElement;
+    if (!btn) return setHighlight((h) => ({ ...h, opacity: 0 }));
+
     const navRect = navRef.current.getBoundingClientRect();
     const btnRect = btn.getBoundingClientRect();
 
@@ -38,13 +40,13 @@ export default function Dock() {
   };
 
   return (
-    <nav className="relative w-96 rounded-full border border-white/20 bg-white/10 shadow-lg backdrop-blur-md">
+    <nav className="relative w-82 rounded-full border border-white/20 bg-white/10 shadow-lg backdrop-blur-md sm:w-96">
       <ul
         ref={navRef}
         className="relative flex w-full items-center p-2"
         onMouseLeave={() => setFocused(null)}
       >
-        <li className="flex items-center pl-4">
+        <li className="hidden items-center pl-4 sm:flex">
           <button
             onClick={() => {
               if (isHome) {
