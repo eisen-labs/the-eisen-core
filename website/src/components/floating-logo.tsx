@@ -15,17 +15,32 @@ function Logo(props: { config: Record<string, unknown>; [key: string]: unknown }
   const { nodes } = useGLTF('/logo.glb') as unknown as {
     nodes: { Curve: { geometry: THREE.BufferGeometry } };
   };
+  const meshRef = React.useRef<THREE.Mesh>(null);
+
+  useFrame((state) => {
+    if (meshRef.current?.material) {
+      const rawProgress = Math.min(state.clock.elapsedTime / 0.5, 1);
+      const progress = Math.pow(rawProgress, 2);
+      (meshRef.current.material as THREE.Material & { opacity: number }).opacity = progress;
+    }
+  });
+
   return React.createElement(
     'group',
     { ...props, dispose: null },
     React.createElement(
       'mesh',
       {
+        ref: meshRef,
         geometry: nodes.Curve.geometry,
         rotation: [0, 0, -Math.PI * 0.5],
         scale: 0.2,
       },
-      React.createElement(MeshTransmissionMaterial, props.config),
+      React.createElement(MeshTransmissionMaterial, {
+        ...props.config,
+        transparent: true,
+        opacity: 0,
+      }),
     ),
   );
 }
@@ -133,7 +148,7 @@ function Scene({ showControls = false }: { showControls?: boolean }) {
       'group',
       { ref: block },
       React.createElement(Logo, {
-        position: [0, -0.9, 1.3],
+        position: [0, -2.5, 1.3],
         rotation: [Math.PI / 2, 0, 0],
         config: config,
       }),
@@ -145,8 +160,8 @@ export default function FloatingLogo({ showControls = false }: FloatingLogoProps
   return React.createElement(
     'div',
     {
-      className: `fixed inset-0 -z-10`,
-      style: { width: '100vw', height: '100vh' },
+      className: `absolute inset-0 z-0`,
+      style: { width: '100%', height: '1000px' },
     },
     React.createElement(
       Canvas,
