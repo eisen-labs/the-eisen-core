@@ -4,7 +4,20 @@ export default function Home() {
   return (
     <>
       <div className="grid min-h-screen grid-cols-1 gap-6 p-6 md:grid-cols-2">
-        <div className="bg-foreground/5 order-2 hidden rounded-2xl md:order-1 md:block" />
+        <div className="bg-foreground/5 order-2 hidden overflow-hidden rounded-2xl md:order-1 md:block">
+          <video
+            autoPlay
+            loop
+            muted
+            playsInline
+            disablePictureInPicture
+            disableRemotePlayback
+            controlsList="nodownload nofullscreen noremoteplayback"
+            className="pointer-events-none h-full w-full object-cover"
+          >
+            <source src="/preview.mp4" type="video/mp4" />
+          </video>
+        </div>
 
         <div className="order-1 flex flex-col justify-center px-2 md:order-2 md:px-6 md:pt-0">
           <h1 className="mb-6 font-serif text-4xl sm:text-5xl md:text-6xl">
@@ -15,7 +28,20 @@ export default function Home() {
             are invisible &mdash; and you can&apos;t change them.
           </p>
 
-          <div className="bg-foreground/5 border-foreground/10 my-8 aspect-video rounded-2xl border md:hidden" />
+          <div className="bg-foreground/5 my-8 aspect-video overflow-hidden rounded-2xl md:hidden">
+            <video
+              autoPlay
+              loop
+              muted
+              playsInline
+              disablePictureInPicture
+              disableRemotePlayback
+              controlsList="nodownload nofullscreen noremoteplayback"
+              className="pointer-events-none h-full w-full object-cover"
+            >
+              <source src="/preview.mp4" type="video/mp4" />
+            </video>
+          </div>
 
           <p className="mt-0 text-base md:mt-4 md:text-lg">
             We provide the observability layer your AI workflow is missing.
