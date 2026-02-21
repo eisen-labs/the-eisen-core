@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+host/node_modules/
+
+# Build output
+dist/
+
+# Vite
+.vite/
+
+# Tauri / Rust
+src-tauri/target/
+src-tauri/gen/
+src-tauri/bin/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+bun-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+*.swp
+*.swo
+*~
+
+# public js and css files
+public/chatWebview.js
+public/graph.js
+public/graph.css
+public/reset.css
+public/vscode.css
+public/main.css

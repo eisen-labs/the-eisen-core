@@ -1,0 +1,1020 @@
+/**
+ * eisen-host — Standalone host binary entry point.
+ *
+ * Reads JSON commands from stdin (one per line), writes JSON events to
+ * stdout (one per line). Manages ACP agent instances, the orchestrator,
+ * and TCP graph telemetry.
+ *
+ * Usage: eisen-host --cwd <directory>
+ */
+
+import { spawn } from "node:child_process";
+import * as readline from "node:readline";
+import { marked } from "marked";
+import {
+  type CreateTerminalRequest,
+  type CreateTerminalResponse,
+  type KillTerminalCommandRequest,
+  type KillTerminalCommandResponse,
+  type ReadTextFileRequest,
+  type ReadTextFileResponse,
+  type ReleaseTerminalRequest,
+  type ReleaseTerminalResponse,
+  type SessionNotification,
+  type TerminalOutputRequest,
+  type TerminalOutputResponse,
+  type WaitForTerminalExitRequest,
+  type WaitForTerminalExitResponse,
+  type WriteTextFileRequest,
+  type WriteTextFileResponse,
+} from "@agentclientprotocol/sdk";
+import * as fs from "node:fs";
+
+import { setCwd, getCwd, StateStore as Memento } from "./env";
+import { findFiles } from "./file-search";
+import { getAgent, getAgentsWithStatus, ensureAgentStatusLoaded } from "./acp/agents";
+import { ACPClient, type ContextChipData } from "./acp/client";
+import { EisenOrchestrator, AGENT_COLORS } from "./orchestrator";
+import { FileSearchService } from "./file-search-service";
+
+marked.setOptions({ breaks: true, gfm: true });
+
+// ---------------------------------------------------------------------------
+// Parse CLI args
+// ---------------------------------------------------------------------------
+
+function parseCwd(): string {
+  const args = process.argv.slice(2);
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--cwd" && args[i + 1]) {
+      return args[i + 1];
+    }
+  }
+  return process.cwd();
+}
+
+const cwd = parseCwd();
+setCwd(cwd);
+
+// ---------------------------------------------------------------------------
+// IPC helpers
+// ---------------------------------------------------------------------------
+
+function send(message: Record<string, unknown>): void {
+  process.stdout.write(JSON.stringify(message) + "\n");
+}
+
+// ---------------------------------------------------------------------------
+// Global state
+// ---------------------------------------------------------------------------
+
+const globalState = new Memento();
+const orchestrator = new EisenOrchestrator();
+const fileSearchService = new FileSearchService(cwd);
+
+const SELECTED_AGENT_KEY = "eisen.selectedAgent";
+const SELECTED_MODE_KEY = "eisen.selectedMode";
+const SELECTED_MODEL_KEY = "eisen.selectedModel";
+
+const MAX_AGENT_INSTANCES = 10;
+
+const AGENT_SHORT_NAMES: Record<string, string> = {
+  opencode: "op",
+  "claude-code": "cl",
+  codex: "cx",
+  gemini: "ge",
+  goose: "go",
+  amp: "am",
+  aider: "ai",
+};
+
+function agentShortName(agentType: string): string {
+  return AGENT_SHORT_NAMES[agentType] ?? agentType.slice(0, 2);
+}
+
+// ---------------------------------------------------------------------------
+// Agent instances
+// ---------------------------------------------------------------------------
+
+interface AgentInstance {
+  key: string;
+  agentType: string;
+  label: string;
+  client: ACPClient;
+  acpSessionId: string | null;
+  hasAcpSession: boolean;
+  hasRestoredModeModel: boolean;
+  stderrBuffer: string;
+  streamingText: string;
+  color: string;
+  isStreaming: boolean;
+}
+
+interface ManagedTerminal {
+  id: string;
+  proc: ReturnType<typeof spawn> | null;
+  output: string;
+  outputByteLimit: number | null;
+  truncated: boolean;
+  exitCode: number | null;
+  signal: string | null;
+  exitPromise: Promise<void>;
+  exitResolve: () => void;
+}
+
+const agentInstances = new Map<string, AgentInstance>();
+let currentInstanceKey: string | null = null;
+const instanceCounters = new Map<string, number>();
+let nextColorIndex = 0;
+const connectedInstanceIds = new Set<string>();
+const terminals = new Map<string, ManagedTerminal>();
+let terminalCounter = 0;
+
+function getActiveInstance(): AgentInstance | undefined {
+  return currentInstanceKey ? agentInstances.get(currentInstanceKey) : undefined;
+}
+
+function getActiveClient(): ACPClient | null {
+  return getActiveInstance()?.client ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Instance management
+// ---------------------------------------------------------------------------
+
+interface InstanceInfo {
+  key: string;
+  label: string;
+  agentType: string;
+  color: string;
+  connected: boolean;
+  isStreaming: boolean;
+}
+
+function getInstanceList(): InstanceInfo[] {
+  const list: InstanceInfo[] = [];
+  for (const inst of agentInstances.values()) {
+    list.push({
+      key: inst.key,
+      label: inst.label,
+      agentType: inst.agentType,
+      color: inst.color,
+      connected: inst.client.isConnected(),
+      isStreaming: inst.isStreaming,
+    });
+  }
+  return list;
+}
+
+function sendInstanceList(): void {
+  send({
+    type: "instanceList",
+    instances: getInstanceList(),
+    currentInstanceKey,
+  });
+}
+
+function setupClientHandlers(client: ACPClient, instanceKey: string): void {
+  client.setOnStateChange((state) => {
+    const inst = agentInstances.get(instanceKey);
+    console.error(
+      `[Host] Instance "${instanceKey}" (type=${inst?.agentType}) state -> "${state}" (instanceId=${client.instanceId}, isActive=${currentInstanceKey === instanceKey})`,
+    );
+
+    if (state === "connected") {
+      const instId = client.instanceId;
+      if (instId) {
+        connectedInstanceIds.add(instId);
+        // Register with orchestrator for graph visualization
+        registerAgentWithOrchestrator(client);
+      }
+      sendInstanceList();
+    }
+    if (state === "disconnected") {
+      const instId = client.instanceId;
+      if (instId && connectedInstanceIds.has(instId)) {
+        connectedInstanceIds.delete(instId);
+        orchestrator.removeAgent(instId);
+      }
+      sendInstanceList();
+    }
+
+    if (currentInstanceKey === instanceKey) {
+      send({ type: "connectionState", state });
+    }
+  });
+
+  client.setOnSessionUpdate((update: SessionNotification) => {
+    if (currentInstanceKey === instanceKey) {
+      handleSessionUpdate(update);
+    } else {
+      const bgInst = agentInstances.get(instanceKey);
+      if (
+        bgInst &&
+        update.update?.sessionUpdate === "agent_message_chunk" &&
+        update.update?.content?.type === "text"
+      ) {
+        bgInst.streamingText += update.update.content.text;
+      }
+    }
+  });
+
+  client.setOnStderr((text: string) => {
+    const inst = agentInstances.get(instanceKey);
+    if (inst) {
+      inst.stderrBuffer += text;
+    }
+    if (currentInstanceKey === instanceKey) {
+      handleStderr(text, instanceKey);
+    }
+  });
+
+  client.setOnReadTextFile(async (params: ReadTextFileRequest): Promise<ReadTextFileResponse> => {
+    return handleReadTextFile(params);
+  });
+
+  client.setOnWriteTextFile(async (params: WriteTextFileRequest): Promise<WriteTextFileResponse> => {
+    return handleWriteTextFile(params);
+  });
+
+  client.setOnCreateTerminal(async (params: CreateTerminalRequest): Promise<CreateTerminalResponse> => {
+    return handleCreateTerminal(params);
+  });
+
+  client.setOnTerminalOutput(async (params: TerminalOutputRequest): Promise<TerminalOutputResponse> => {
+    return handleTerminalOutput(params);
+  });
+
+  client.setOnWaitForTerminalExit(async (params: WaitForTerminalExitRequest): Promise<WaitForTerminalExitResponse> => {
+    return handleWaitForTerminalExit(params);
+  });
+
+  client.setOnKillTerminalCommand(async (params: KillTerminalCommandRequest): Promise<KillTerminalCommandResponse> => {
+    return handleKillTerminalCommand(params);
+  });
+
+  client.setOnReleaseTerminal(async (params: ReleaseTerminalRequest): Promise<ReleaseTerminalResponse> => {
+    return handleReleaseTerminal(params);
+  });
+}
+
+function createInstance(agentType: string): AgentInstance {
+  if (agentInstances.size >= MAX_AGENT_INSTANCES) {
+    throw new Error(
+      `Maximum number of concurrent agents (${MAX_AGENT_INSTANCES}) reached. ` +
+        `Close an existing agent tab before spawning a new one.`,
+    );
+  }
+
+  const agent = getAgent(agentType);
+  if (!agent) {
+    throw new Error(`Unknown agent: ${agentType}`);
+  }
+
+  const count = (instanceCounters.get(agentType) ?? 0) + 1;
+  instanceCounters.set(agentType, count);
+  const short = agentShortName(agentType);
+  const key = `${short}${count}`;
+
+  const color = AGENT_COLORS[nextColorIndex % AGENT_COLORS.length];
+  nextColorIndex++;
+
+  const hostDir = process.execPath;
+  const client = new ACPClient({
+    agentConfig: agent,
+    hostDir: hostDir,
+  });
+
+  const instance: AgentInstance = {
+    key,
+    agentType,
+    label: key,
+    client,
+    acpSessionId: null,
+    hasAcpSession: false,
+    hasRestoredModeModel: false,
+    stderrBuffer: "",
+    streamingText: "",
+    color,
+    isStreaming: false,
+  };
+
+  setupClientHandlers(client, key);
+  agentInstances.set(key, instance);
+  return instance;
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrator wiring
+// ---------------------------------------------------------------------------
+
+orchestrator.onMergedSnapshot = (snapshot) => {
+  send({ type: "mergedSnapshot", ...snapshot });
+};
+
+orchestrator.onMergedDelta = (delta) => {
+  send({ type: "mergedDelta", ...delta });
+};
+
+orchestrator.onAgentUpdate = (agents) => {
+  send({ type: "agentUpdate", agents });
+};
+
+async function registerAgentWithOrchestrator(client: ACPClient): Promise<void> {
+  const agentType = client.getAgentId();
+  try {
+    const port = await client.waitForTcpPort();
+    const instanceId = client.instanceId;
+    if (instanceId && agentType) {
+      orchestrator.addAgent(instanceId, port, agentType);
+    }
+  } catch (e) {
+    console.error(`[Host] Failed to register agent "${agentType}" with orchestrator:`, e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Session update handler
+// ---------------------------------------------------------------------------
+
+function handleSessionUpdate(notification: SessionNotification): void {
+  const update = notification.update;
+  const inst = getActiveInstance();
+
+  if (update.sessionUpdate === "agent_message_chunk") {
+    if (update.content.type === "text") {
+      if (inst) inst.streamingText += update.content.text;
+      send({ type: "streamChunk", text: update.content.text });
+    }
+  } else if (update.sessionUpdate === "tool_call") {
+    send({
+      type: "toolCallStart",
+      name: update.title,
+      toolCallId: update.toolCallId,
+      kind: update.kind,
+    });
+  } else if (update.sessionUpdate === "tool_call_update") {
+    if (update.status === "completed" || update.status === "failed") {
+      let terminalOutput: string | undefined;
+      if (update.content && update.content.length > 0) {
+        const terminalContent = update.content.find((c: { type: string }) => c.type === "terminal");
+        if (terminalContent && "terminalId" in terminalContent) {
+          terminalOutput = `[Terminal: ${String(terminalContent.terminalId)}]`;
+        }
+      }
+      send({
+        type: "toolCallComplete",
+        toolCallId: update.toolCallId,
+        title: update.title,
+        kind: update.kind,
+        content: update.content,
+        rawInput: update.rawInput,
+        rawOutput: update.rawOutput,
+        status: update.status,
+        terminalOutput,
+      });
+    }
+  } else if (update.sessionUpdate === "current_mode_update") {
+    send({ type: "modeUpdate", modeId: update.currentModeId });
+  } else if (update.sessionUpdate === "available_commands_update") {
+    send({
+      type: "availableCommands",
+      commands: update.availableCommands,
+    });
+  } else if (update.sessionUpdate === "plan") {
+    send({ type: "plan", plan: { entries: update.entries } });
+  } else if (update.sessionUpdate === "agent_thought_chunk") {
+    if (update.content?.type === "text") {
+      send({ type: "thoughtChunk", text: update.content.text });
+    }
+  } else if (update.sessionUpdate === "usage_update") {
+    send({
+      type: "usageUpdate",
+      used: update.used,
+      size: update.size,
+      cost: update.cost,
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Stderr handler
+// ---------------------------------------------------------------------------
+
+function handleStderr(_text: string, instanceKey: string): void {
+  const inst = agentInstances.get(instanceKey);
+  if (!inst) return;
+  const errorMatch = inst.stderrBuffer.match(/(\w+Error):\s*(\w+)?\s*\n?\s*data:\s*\{([^}]+)\}/);
+  if (errorMatch) {
+    const errorType = errorMatch[1];
+    const errorData = errorMatch[3];
+    const providerMatch = errorData.match(/providerID:\s*"([^"]+)"/);
+    const modelMatch = errorData.match(/modelID:\s*"([^"]+)"/);
+    let message = `Agent error: ${errorType}`;
+    if (providerMatch && modelMatch) {
+      message = `Model not found: ${providerMatch[1]}/${modelMatch[1]}`;
+    }
+    if (currentInstanceKey === instanceKey) {
+      send({ type: "agentError", text: message });
+    }
+    inst.stderrBuffer = "";
+  }
+  if (inst.stderrBuffer.length > 10000) {
+    inst.stderrBuffer = inst.stderrBuffer.slice(-5000);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// File I/O handlers
+// ---------------------------------------------------------------------------
+
+async function handleReadTextFile(params: ReadTextFileRequest): Promise<ReadTextFileResponse> {
+  try {
+    let content = await fs.promises.readFile(params.path, "utf-8");
+    if (params.line !== undefined || params.limit !== undefined) {
+      const lines = content.split("\n");
+      const startLine = params.line ?? 0;
+      const lineLimit = params.limit ?? lines.length;
+      content = lines.slice(startLine, startLine + lineLimit).join("\n");
+    }
+    return { content };
+  } catch (error) {
+    console.error("[Host] Failed to read file:", error);
+    throw error;
+  }
+}
+
+async function handleWriteTextFile(params: WriteTextFileRequest): Promise<WriteTextFileResponse> {
+  try {
+    await fs.promises.writeFile(params.path, params.content);
+    return {};
+  } catch (error) {
+    console.error("[Host] Failed to write file:", error);
+    throw error;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Terminal handlers
+// ---------------------------------------------------------------------------
+
+function appendTerminalOutput(terminal: ManagedTerminal, text: string): void {
+  terminal.output += text;
+  if (terminal.outputByteLimit !== null) {
+    const byteLength = Buffer.byteLength(terminal.output, "utf8");
+    if (byteLength > terminal.outputByteLimit) {
+      const encoded = Buffer.from(terminal.output, "utf8");
+      const sliced = encoded.slice(-terminal.outputByteLimit);
+      terminal.output = sliced.toString("utf8");
+      terminal.truncated = true;
+    }
+  }
+}
+
+async function handleCreateTerminal(params: CreateTerminalRequest): Promise<CreateTerminalResponse> {
+  const terminalId = `term-${++terminalCounter}-${Date.now()}`;
+  let exitResolve: () => void = () => {};
+  const exitPromise = new Promise<void>((resolve) => {
+    exitResolve = resolve;
+  });
+
+  const managedTerminal: ManagedTerminal = {
+    id: terminalId,
+    proc: null,
+    output: "",
+    outputByteLimit: params.outputByteLimit ?? null,
+    truncated: false,
+    exitCode: null,
+    signal: null,
+    exitPromise,
+    exitResolve,
+  };
+
+  const termCwd =
+    params.cwd && params.cwd.trim() !== "" ? params.cwd : getCwd();
+
+  const useShell = !params.args || params.args.length === 0;
+  const proc = spawn(params.command, params.args || [], {
+    cwd: termCwd,
+    env: {
+      ...process.env,
+      ...(params.env?.reduce(
+        (acc: Record<string, string>, e: { name: string; value: string }) => ({
+          ...acc,
+          [e.name]: e.value,
+        }),
+        {},
+      ) || {}),
+    },
+    shell: useShell,
+  });
+
+  managedTerminal.proc = proc;
+
+  proc.stdout?.on("data", (data: Buffer) => {
+    appendTerminalOutput(managedTerminal, data.toString());
+  });
+
+  proc.stderr?.on("data", (data: Buffer) => {
+    appendTerminalOutput(managedTerminal, data.toString());
+  });
+
+  proc.on("close", (code: number | null, signal: string | null) => {
+    managedTerminal.exitCode = code;
+    managedTerminal.signal = signal;
+    managedTerminal.exitResolve();
+  });
+
+  proc.on("error", (_err: Error) => {
+    managedTerminal.exitCode = 1;
+    managedTerminal.exitResolve();
+  });
+
+  terminals.set(terminalId, managedTerminal);
+  return { terminalId };
+}
+
+async function handleTerminalOutput(params: TerminalOutputRequest): Promise<TerminalOutputResponse> {
+  const terminal = terminals.get(params.terminalId);
+  if (!terminal) {
+    throw new Error(`Terminal not found: ${params.terminalId}`);
+  }
+  const exitStatus =
+    terminal.exitCode !== null
+      ? {
+          exitCode: terminal.exitCode,
+          ...(terminal.signal !== null && { signal: terminal.signal }),
+        }
+      : null;
+  return {
+    output: terminal.output,
+    truncated: terminal.truncated,
+    exitStatus,
+  };
+}
+
+async function handleWaitForTerminalExit(params: WaitForTerminalExitRequest): Promise<WaitForTerminalExitResponse> {
+  const terminal = terminals.get(params.terminalId);
+  if (!terminal) {
+    throw new Error(`Terminal not found: ${params.terminalId}`);
+  }
+  await terminal.exitPromise;
+  return {
+    exitCode: terminal.exitCode,
+    ...(terminal.signal !== null && { signal: terminal.signal }),
+  };
+}
+
+async function handleKillTerminalCommand(params: KillTerminalCommandRequest): Promise<KillTerminalCommandResponse> {
+  const terminal = terminals.get(params.terminalId);
+  if (!terminal) {
+    throw new Error(`Terminal not found: ${params.terminalId}`);
+  }
+  if (terminal.proc && !terminal.proc.killed) {
+    try {
+      terminal.proc.kill();
+    } catch {}
+  }
+  return {};
+}
+
+async function handleReleaseTerminal(params: ReleaseTerminalRequest): Promise<ReleaseTerminalResponse> {
+  const terminal = terminals.get(params.terminalId);
+  if (!terminal) return {};
+  if (terminal.proc && !terminal.proc.killed) {
+    try {
+      terminal.proc.kill();
+    } catch {}
+  }
+  terminals.delete(params.terminalId);
+  return {};
+}
+
+// ---------------------------------------------------------------------------
+// Instance switching
+// ---------------------------------------------------------------------------
+
+function switchToInstance(instanceKey: string): void {
+  if (instanceKey === currentInstanceKey) return;
+  const target = agentInstances.get(instanceKey);
+  if (!target) return;
+
+  currentInstanceKey = instanceKey;
+  globalState.update(SELECTED_AGENT_KEY, target.agentType);
+
+  send({
+    type: "instanceChanged",
+    instanceKey,
+    isStreaming: target.isStreaming,
+  });
+  send({
+    type: "connectionState",
+    state: target.client.getState(),
+  });
+  sendInstanceList();
+
+  if (target.client.isConnected()) {
+    sendSessionMetadata();
+  } else {
+    send({ type: "sessionMetadata", modes: null, models: null });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Message handlers
+// ---------------------------------------------------------------------------
+
+function handleSpawnAgent(agentType: string): void {
+  const agent = getAgent(agentType);
+  if (!agent) return;
+
+  try {
+    const instance = createInstance(agentType);
+    switchToInstance(instance.key);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to spawn agent";
+    send({ type: "error", text: message });
+  }
+}
+
+function handleCloseInstance(instanceKey: string): void {
+  const instance = agentInstances.get(instanceKey);
+  if (!instance) return;
+
+  const instId = instance.client.instanceId;
+  try {
+    instance.client.dispose();
+  } catch {}
+
+  if (instId && connectedInstanceIds.has(instId)) {
+    connectedInstanceIds.delete(instId);
+    orchestrator.removeAgent(instId);
+  }
+
+  agentInstances.delete(instanceKey);
+
+  if (currentInstanceKey === instanceKey) {
+    const remaining = Array.from(agentInstances.keys());
+    if (remaining.length > 0) {
+      switchToInstance(remaining[remaining.length - 1]);
+    } else {
+      currentInstanceKey = null;
+      instanceCounters.clear();
+      nextColorIndex = 0;
+      send({
+        type: "instanceChanged",
+        instanceKey: null,
+        isStreaming: false,
+      });
+    }
+  }
+
+  sendInstanceList();
+}
+
+async function handleUserMessage(
+  text: string,
+  contextChips?: Array<{
+    filePath: string;
+    fileName: string;
+    isDirectory?: boolean;
+    range?: { startLine: number; endLine: number };
+  }>,
+): Promise<void> {
+  const inst = getActiveInstance();
+  if (!inst) return;
+
+  const chipNames = contextChips?.map((c) => {
+    const name = c.fileName;
+    if (c.isDirectory) return `${name}/`;
+    return c.range ? `${name}:${c.range.startLine}-${c.range.endLine}` : name;
+  });
+  send({
+    type: "userMessage",
+    text,
+    contextChipNames: chipNames,
+  });
+
+  try {
+    if (!inst.client.isConnected()) {
+      await inst.client.connect();
+    }
+
+    if (!inst.hasAcpSession) {
+      const workingDir = getCwd();
+      const resp = await inst.client.newSession(workingDir);
+      inst.acpSessionId = resp.sessionId;
+      inst.hasAcpSession = true;
+      sendSessionMetadata();
+    } else if (inst.acpSessionId) {
+      inst.client.setActiveSession(inst.acpSessionId);
+    }
+
+    inst.streamingText = "";
+    inst.stderrBuffer = "";
+    inst.isStreaming = true;
+    send({ type: "streamStart" });
+
+    const chipData: ContextChipData[] | undefined = contextChips?.map((c) => ({
+      filePath: c.filePath,
+      fileName: c.fileName,
+      isDirectory: c.isDirectory,
+      range: c.range,
+    }));
+    const response = await inst.client.sendMessage(text, chipData);
+
+    inst.isStreaming = false;
+    if (inst.streamingText.length === 0) {
+      send({ type: "error", text: "Agent returned no response." });
+      send({ type: "streamEnd", stopReason: "error", html: "" });
+    } else {
+      const renderedHtml = marked.parse(inst.streamingText) as string;
+      send({
+        type: "streamEnd",
+        stopReason: response.stopReason,
+        html: renderedHtml,
+      });
+    }
+    inst.streamingText = "";
+  } catch (error) {
+    inst.isStreaming = false;
+    const errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
+    send({ type: "error", text: `Error: ${errorMessage}` });
+    send({ type: "streamEnd", stopReason: "error", html: "" });
+    inst.streamingText = "";
+    inst.stderrBuffer = "";
+  }
+}
+
+async function handleModeChange(modeId: string): Promise<void> {
+  const inst = getActiveInstance();
+  if (!inst) return;
+  try {
+    await inst.client.setMode(modeId);
+    const key = `${SELECTED_MODE_KEY}.${inst.agentType}`;
+    await globalState.update(key, modeId);
+    sendSessionMetadata();
+  } catch (error) {
+    console.error("[Host] Failed to set mode:", error);
+  }
+}
+
+async function handleModelChange(modelId: string): Promise<void> {
+  const inst = getActiveInstance();
+  if (!inst) return;
+  try {
+    await inst.client.setModel(modelId);
+    const key = `${SELECTED_MODEL_KEY}.${inst.agentType}`;
+    await globalState.update(key, modelId);
+    sendSessionMetadata();
+  } catch (error) {
+    console.error("[Host] Failed to set model:", error);
+  }
+}
+
+async function handleConnect(): Promise<void> {
+  const inst = getActiveInstance();
+  if (!inst) return;
+  try {
+    if (!inst.client.isConnected()) {
+      await inst.client.connect();
+    }
+    if (!inst.hasAcpSession) {
+      const workingDir = getCwd();
+      const resp = await inst.client.newSession(workingDir);
+      inst.acpSessionId = resp.sessionId;
+      inst.hasAcpSession = true;
+      sendSessionMetadata();
+    }
+  } catch (error) {
+    send({
+      type: "error",
+      text: error instanceof Error ? error.message : "Failed to connect",
+    });
+  }
+}
+
+async function handleNewChat(): Promise<void> {
+  const inst = getActiveInstance();
+  if (!inst) return;
+
+  inst.acpSessionId = null;
+  inst.hasAcpSession = false;
+  inst.hasRestoredModeModel = false;
+  inst.streamingText = "";
+
+  send({ type: "chatCleared" });
+  send({ type: "sessionMetadata", modes: null, models: null });
+
+  try {
+    if (inst.client.isConnected()) {
+      const workingDir = getCwd();
+      const resp = await inst.client.newSession(workingDir);
+      inst.acpSessionId = resp.sessionId;
+      inst.hasAcpSession = true;
+      sendSessionMetadata();
+    }
+  } catch (error) {
+    console.error("[Host] Failed to create new session:", error);
+  }
+}
+
+function handleClearChat(): void {
+  send({ type: "chatCleared" });
+}
+
+function sendSessionMetadata(): void {
+  const inst = getActiveInstance();
+  if (!inst) return;
+  const metadata = inst.client.getSessionMetadata(inst.acpSessionId ?? undefined);
+  send({
+    type: "sessionMetadata",
+    modes: metadata?.modes ?? null,
+    models: metadata?.models ?? null,
+    commands: metadata?.commands ?? null,
+  });
+
+  if (!inst.hasRestoredModeModel && inst.hasAcpSession) {
+    inst.hasRestoredModeModel = true;
+    restoreSavedModeAndModel().catch((error) =>
+      console.warn("[Host] Failed to restore saved mode/model:", error),
+    );
+  }
+}
+
+async function restoreSavedModeAndModel(): Promise<void> {
+  const inst = getActiveInstance();
+  if (!inst) return;
+  const metadata = inst.client.getSessionMetadata();
+  const availableModes = Array.isArray(metadata?.modes?.availableModes) ? metadata!.modes!.availableModes : [];
+  const availableModels = Array.isArray(metadata?.models?.availableModels) ? metadata!.models!.availableModels : [];
+
+  const modeKey = `${SELECTED_MODE_KEY}.${inst.agentType}`;
+  const modelKey = `${SELECTED_MODEL_KEY}.${inst.agentType}`;
+  const savedModeId = globalState.get<string>(modeKey);
+  const savedModelId = globalState.get<string>(modelKey);
+
+  let modeRestored = false;
+  let modelRestored = false;
+
+  if (savedModeId && availableModes.some((m: any) => m?.id === savedModeId)) {
+    await inst.client.setMode(savedModeId);
+    modeRestored = true;
+  }
+
+  if (savedModelId && availableModels.some((m: any) => m?.modelId === savedModelId)) {
+    await inst.client.setModel(savedModelId);
+    modelRestored = true;
+  }
+
+  if (modeRestored || modelRestored) {
+    send({ type: "sessionMetadata", ...metadata });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Main stdin/stdout IPC loop
+// ---------------------------------------------------------------------------
+
+async function handleMessage(message: Record<string, any>): Promise<void> {
+  switch (message.type) {
+    case "sendMessage":
+      if (message.text || (message.contextChips && message.contextChips.length > 0)) {
+        await handleUserMessage(message.text || "", message.contextChips);
+      }
+      break;
+    case "fileSearch":
+      if (message.query !== undefined) {
+        const results = await fileSearchService.search(message.query);
+        send({ type: "fileSearchResults", searchResults: results });
+      }
+      break;
+    case "selectAgent":
+      if (message.agentId) {
+        handleSpawnAgent(message.agentId);
+      }
+      break;
+    case "spawnAgent":
+      if (message.agentType) {
+        handleSpawnAgent(message.agentType);
+      }
+      break;
+    case "switchInstance":
+      if (message.instanceKey) {
+        switchToInstance(message.instanceKey);
+      }
+      break;
+    case "closeInstance":
+      if (message.instanceKey) {
+        handleCloseInstance(message.instanceKey);
+      }
+      break;
+    case "selectMode":
+      if (message.modeId) {
+        await handleModeChange(message.modeId);
+      }
+      break;
+    case "selectModel":
+      if (message.modelId) {
+        await handleModelChange(message.modelId);
+      }
+      break;
+    case "connect":
+      await handleConnect();
+      break;
+    case "newChat":
+      await handleNewChat();
+      break;
+    case "cancel":
+      await getActiveClient()?.cancel();
+      break;
+    case "clearChat":
+      handleClearChat();
+      break;
+    case "copyMessage":
+      if (message.text) {
+        // Forward to frontend for clipboard access
+        send({ type: "copyToClipboard", text: message.text });
+      }
+      break;
+    case "ready": {
+      // Send current connection state
+      const activeClient = getActiveClient();
+      if (activeClient) {
+        send({ type: "connectionState", state: activeClient.getState() });
+      }
+      // Send agent list for spawn dropdown
+      const agentsWithStatus = getAgentsWithStatus();
+      send({
+        type: "agents",
+        agents: agentsWithStatus.map((a) => ({
+          id: a.id,
+          name: a.name,
+          available: a.available,
+        })),
+        selected: getActiveInstance()?.agentType ?? null,
+      });
+      sendInstanceList();
+      // Send streaming state for active instance
+      const active = getActiveInstance();
+      if (active) {
+        send({ type: "streamingState", isStreaming: active.isStreaming });
+      }
+      sendSessionMetadata();
+      break;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Startup
+// ---------------------------------------------------------------------------
+
+async function main(): Promise<void> {
+  console.error(`[eisen-host] Starting with cwd: ${cwd}`);
+
+  // Probe agent availability in the background
+  ensureAgentStatusLoaded().catch((e) =>
+    console.error("[eisen-host] Failed to probe agent availability:", e),
+  );
+
+  // Read stdin line by line
+  const rl = readline.createInterface({
+    input: process.stdin,
+    terminal: false,
+  });
+
+  rl.on("line", async (line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+
+    try {
+      const message = JSON.parse(trimmed);
+      await handleMessage(message);
+    } catch (e) {
+      console.error("[eisen-host] Failed to parse stdin line:", e, trimmed.substring(0, 200));
+    }
+  });
+
+  rl.on("close", () => {
+    console.error("[eisen-host] stdin closed, shutting down");
+    // Dispose all agents
+    for (const inst of agentInstances.values()) {
+      try {
+        inst.client.dispose();
+      } catch {}
+    }
+    // Dispose terminals
+    for (const terminal of terminals.values()) {
+      if (terminal.proc && !terminal.proc.killed) {
+        try {
+          terminal.proc.kill();
+        } catch {}
+      }
+    }
+    orchestrator.dispose();
+    process.exit(0);
+  });
+}
+
+main();

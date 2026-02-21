@@ -3,8 +3,9 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
-    "build": "cp src/style.css ../extension/media/graph.css && esbuild src/main.ts --bundle --outfile=../extension/media/graph.js --format=iife --minify",
-    "dev": "esbuild src/main.ts --bundle --outfile=../extension/media/graph.js --format=iife --watch",
+    "build": "esbuild src/main.ts --bundle --outfile=dist/main.js --format=iife --minify && cp src/style.css dist/",
+    "build:win": "esbuild src/main.ts --bundle --outfile=dist/main.js --format=iife --minify && node -e \"require('node:fs').copyFileSync('src/style.css','dist/style.css')\"",
+    "dev": "esbuild src/main.ts --bundle --outfile=dist/main.js --format=iife --watch",
     "clean": "rm -rf dist"
   },
   "devDependencies": {
