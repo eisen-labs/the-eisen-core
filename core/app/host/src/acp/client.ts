@@ -578,7 +578,7 @@ export class ACPClient {
           ...process.env,
           RUST_LOG: process.env.RUST_LOG || "eisen_core=debug",
         },
-        shell: process.platform === "win32", // Required on Windows for .cmd/.bat files
+        shell: process.platform === "win32" && /\.(cmd|bat)$/i.test(command), // Required on Windows for .cmd/.bat files, but NOT for .exe (shell:true breaks paths with spaces)
       });
       this.process = proc;
 
