@@ -1,0 +1,134 @@
+{
+  "name": "context-eisen",
+  "displayName": "Eisen",
+  "description": "Live visualization of AI agent activity with integrated chat",
+  "version": "0.0.4",
+  "publisher": "eisen",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/maxdcmn/eisen"
+  },
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "icon": "images/icon.png",
+  "categories": [
+    "AI",
+    "Visualization",
+    "Chat"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "eisen.startChat",
+        "title": "Eisen: Start Agent",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "eisen.newChat",
+        "title": "Eisen: New Agent",
+        "icon": "$(add)"
+      },
+      {
+        "command": "eisen.clearChat",
+        "title": "Eisen: Clear Agent",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "eisen.openGraph",
+        "title": "Eisen: Open Graph",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "eisen.sendSelectionToChat",
+        "title": "Eisen: Send Selection to Chat",
+        "icon": "$(comment-discussion)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "eisen.sendSelectionToChat",
+        "key": "ctrl+shift+l",
+        "mac": "cmd+shift+l",
+        "when": "editorTextFocus"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "eisen",
+          "title": "Eisen",
+          "icon": "$(eye)"
+        }
+      ]
+    },
+    "views": {
+      "eisen": [
+        {
+          "type": "webview",
+          "id": "eisen.graphView",
+          "name": "Graph",
+          "icon": "$(graph)",
+          "contextualTitle": "Eisen Graph"
+        },
+        {
+          "type": "webview",
+          "id": "eisen.chatView",
+          "name": "Agents",
+          "icon": "$(comment-discussion)",
+          "contextualTitle": "Eisen Agents"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "eisen.newChat",
+          "when": "view == eisen.graphView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "eisen.openGraph",
+          "when": "view == eisen.graphView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "eisen.newChat",
+          "when": "view == eisen.chatView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "eisen.openGraph",
+          "when": "view == eisen.chatView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "eisen.clearChat",
+          "when": "view == eisen.chatView",
+          "group": "navigation@3"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "pnpm run build:extension && pnpm run build:webviews && pnpm run build:media",
+    "build:extension": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify",
+    "build:webviews": "esbuild src/views/webview/chatMain.ts --bundle --outfile=dist/chatWebview.js --format=iife --platform=browser --minify",
+    "build:media": "mkdir -p media && cp src/styles/reset.css src/styles/vscode.css src/styles/main.css media/ && cp ../ui/dist/main.js media/graph.js 2>/dev/null || true && cp ../ui/dist/style.css media/graph.css 2>/dev/null || true",
+    "dev": "npm run build",
+    "clean": "rm -rf dist media"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^0.14.1",
+    "marked": "^17.0.1"
+  }
+}

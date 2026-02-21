@@ -1,0 +1,33 @@
+# Source files (compiled to dist/)
+src/**
+**/*.ts
+tsconfig.json
+
+# Dependencies
+node_modules/**
+pnpm-lock.yaml
+
+# Development
+.vscode/**
+.vscode-test/**
+*.map
+
+# Build artifacts
+package.json.bak
+package-lock.json
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Explicitly include these
+!dist/**
+!media/**
+!bin/**
+!images/**
+!README.md
+!LICENSE
+!package.json

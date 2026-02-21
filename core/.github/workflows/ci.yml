@@ -1,0 +1,140 @@
+name: CI
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+            binary: eisen-core
+            pkg-name: context-eisen
+            display-name: Eisen
+          - os: macos-latest
+            target: darwin-arm64
+            binary: eisen-core
+            pkg-name: context-eisen-arm
+            display-name: Eisen (arm)
+          - os: macos-latest
+            target: darwin-x64
+            binary: eisen-core
+            rust-target: x86_64-apple-darwin
+            pkg-name: context-eisen-x64
+            display-name: Eisen (x64)
+          - os: windows-latest
+            target: win32-x64
+            binary: eisen-core.exe
+            pkg-name: context-eisen-win
+            display-name: Eisen (win)
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core -> target
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set extension version and name from tag
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          node -e "
+            const fs = require('fs');
+            const [, version, name, displayName] = process.argv;
+            const pkg = JSON.parse(fs.readFileSync('extension/package.json', 'utf8'));
+            pkg.version = version;
+            pkg.name = name;
+            pkg.displayName = displayName;
+            fs.writeFileSync('extension/package.json', JSON.stringify(pkg, null, 2) + '\n');
+          " "$VERSION" "${{ matrix.pkg-name }}" "${{ matrix.display-name }}"
+          echo "Extension: ${{ matrix.pkg-name }} v${VERSION} (${{ matrix.display-name }})"
+
+      - name: Install Node dependencies
+        shell: bash
+        run: |
+          cd ui && pnpm install
+          cd ../extension && pnpm install
+
+      - name: Build Rust binary
+        run: cargo build --release --manifest-path core/Cargo.toml ${{ matrix.rust-target && format('--target {0}', matrix.rust-target) || '' }}
+
+      - name: Copy binary into extension
+        shell: bash
+        run: |
+          mkdir -p extension/bin
+          if [ -n "${{ matrix.rust-target }}" ]; then
+            cp "core/target/${{ matrix.rust-target }}/release/${{ matrix.binary }}" "extension/bin/${{ matrix.binary }}"
+          else
+            cp "core/target/release/${{ matrix.binary }}" "extension/bin/${{ matrix.binary }}"
+          fi
+          chmod +x "extension/bin/${{ matrix.binary }}" 2>/dev/null || true
+
+      - name: Build UI
+        shell: bash
+        run: pnpm build
+        working-directory: ui
+
+      - name: Build Extension
+        shell: bash
+        run: pnpm build
+        working-directory: extension
+
+      - name: Package platform-specific VSIX
+        shell: bash
+        run: npx @vscode/vsce package --no-dependencies --target ${{ matrix.target }}
+        working-directory: extension
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: eisen-${{ matrix.target }}
+          path: extension/*.vsix
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Upload assets to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" > /dev/null 2>&1; then
+            gh release upload "${{ github.ref_name }}" \
+              --repo "${{ github.repository }}" \
+              --clobber \
+              artifacts/**/*.vsix
+          else
+            gh release create "${{ github.ref_name }}" \
+              --repo "${{ github.repository }}" \
+              --title "${{ github.ref_name }}" \
+              --generate-notes \
+              artifacts/**/*.vsix
+          fi

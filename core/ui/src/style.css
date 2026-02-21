@@ -1,0 +1,141 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #141414;
+  border-right: 0.5px solid var(--vscode-panel-border);
+}
+
+#graph {
+  width: 100%;
+  height: 100%;
+}
+
+#graph canvas {
+  cursor: default !important;
+}
+
+.eisen-controls {
+  position: fixed;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  gap: 0px;
+  z-index: 20;
+}
+
+.eisen-icon-button {
+  width: 24px;
+  height: 24px;
+  padding: 2px;
+  border: 0;
+  background: transparent;
+  color: #e5e7eb;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0.88;
+}
+
+.eisen-icon-button-layers {
+  margin-top: 2px;
+}
+
+.eisen-icon-button:hover {
+  opacity: 1;
+}
+
+.eisen-icon-button svg {
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Node color legend (top-left) */
+.eisen-legend {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  z-index: 20;
+  background: rgba(20, 20, 20, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  font-family: monospace;
+  font-size: 11px;
+  color: #e5e7eb;
+  user-select: none;
+}
+
+.eisen-legend-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.eisen-legend-header:hover {
+  opacity: 1;
+}
+
+.eisen-legend-chevron {
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  transition: transform 0.15s ease;
+}
+
+.eisen-legend.collapsed .eisen-legend-chevron {
+  transform: rotate(-90deg);
+}
+
+.eisen-legend-body {
+  padding: 0 8px 6px;
+}
+
+.eisen-legend.collapsed .eisen-legend-body {
+  display: none;
+}
+
+.eisen-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 18px;
+}
+
+.eisen-legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.eisen-legend-dot.read {
+  background: rgba(34, 197, 94, 0.7);
+  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.5);
+}
+
+.eisen-legend-dot.write {
+  background: rgba(245, 158, 11, 0.7);
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.5);
+}
+
+.eisen-legend-dot.faded {
+  background: rgba(255, 255, 255, 0.15);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1);
+}

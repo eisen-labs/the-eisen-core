@@ -1,0 +1,10 @@
+{
+  "name": "eisen",
+  "private": true,
+  "scripts": {
+    "build:core": "cargo build --release --manifest-path core/Cargo.toml",
+    "build": "cd ui && pnpm build && cd ../extension && pnpm build",
+    "dev": "cd ui && pnpm dev & cd extension && pnpm dev",
+    "clean": "cd ui && pnpm clean && cd ../extension && pnpm clean"
+  }
+}
