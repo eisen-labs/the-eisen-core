@@ -1182,59 +1182,6 @@ class WebviewController {
         this.save();
         break;
       }
-      // Legacy handler — treat as instanceChanged
-      case "agentChanged": {
-        if (this.currentInstanceKey) {
-          this.instanceUiStates.set(this.currentInstanceKey, {
-            contextChips: this.contextChips,
-            availableCommands: this.commands,
-            usageMeterText: this.el.usageMeterEl.textContent || "",
-            isStreaming: this.isStreaming,
-          });
-          this.instanceHtmlCache.set(this.currentInstanceKey, this.el.messagesEl.innerHTML);
-        }
-        this.currentInstanceKey = msg.agentId ?? null;
-        this.el.messagesEl.innerHTML = this.currentInstanceKey
-          ? (this.instanceHtmlCache.get(this.currentInstanceKey) ?? "")
-          : "";
-        this.currentMsg = null;
-        this.currentText = "";
-        this.tools = {};
-        this.hasActiveTool = false;
-        this.expandedToolId = null;
-        this.msgTexts.clear();
-        modeSelector.style.display = "none";
-        modelSelector.style.display = "none";
-        this.hideCmds();
-        this.hideFiles();
-        this.hidePlan();
-        this.hideThought();
-        const legacyCached = this.currentInstanceKey ? this.instanceUiStates.get(this.currentInstanceKey) : undefined;
-        if (legacyCached) {
-          this.contextChips = legacyCached.contextChips;
-          this.commands = legacyCached.availableCommands;
-          this.renderChips();
-          this.isStreaming = legacyCached.isStreaming;
-          if (legacyCached.usageMeterText) {
-            this.el.usageMeterEl.textContent = legacyCached.usageMeterText;
-            this.el.usageMeterEl.style.display = "inline";
-          } else {
-            this.el.usageMeterEl.textContent = "";
-            this.el.usageMeterEl.style.display = "none";
-          }
-        } else {
-          this.contextChips = [];
-          this.commands = [];
-          this.renderChips();
-          this.isStreaming = false;
-          this.el.usageMeterEl.textContent = "";
-          this.el.usageMeterEl.style.display = "none";
-        }
-        this.updateButtons();
-        this.updateView();
-        this.save();
-        break;
-      }
       case "chatCleared":
         this.el.messagesEl.innerHTML = "";
         this.currentMsg = null;

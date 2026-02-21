@@ -31,7 +31,13 @@ import {
   type WriteTextFileResponse,
 } from "@agentclientprotocol/sdk";
 import { getCorePath } from "../bridge";
-import { type AgentConfig, getDefaultAgent, isAgentAvailable } from "./agents";
+import {
+  type AgentConfig,
+  getAgentsWithStatus,
+  getDefaultAgent,
+  hasAnyAvailableAgent,
+  isAgentAvailable,
+} from "./agents";
 
 export interface ContextChipData {
   filePath: string;
@@ -530,7 +536,6 @@ export class ACPClient {
     let useEisenCore = false;
     if (corePath) {
       try {
-        const fs = require("node:fs");
         useEisenCore = fs.existsSync(corePath);
       } catch {
         useEisenCore = false;
@@ -573,8 +578,7 @@ export class ACPClient {
     }
 
     if (!this.skipAvailabilityCheck && !isAgentAvailable(this.agentConfig.id)) {
-      const { hasAnyAvailableAgent, getAgentsWithStatus } = require("./agents");
-      const availableAgents = getAgentsWithStatus().filter((a: any) => a.available);
+      const availableAgents = getAgentsWithStatus().filter((a) => a.available);
 
       if (!hasAnyAvailableAgent()) {
         throw new Error(
@@ -589,7 +593,7 @@ export class ACPClient {
       throw new Error(
         `Agent "${this.agentConfig.name}" is not installed. ` +
           `Please install "${this.agentConfig.command}" or use one of these available agents: ` +
-          availableAgents.map((a: any) => a.name).join(", "),
+          availableAgents.map((a) => a.name).join(", "),
       );
     }
 

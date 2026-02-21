@@ -32,7 +32,6 @@ const LANGUAGE_MAP: Record<string, string> = {
   ".kt": "kotlin",
   ".scala": "scala",
   ".r": "r",
-  ".R": "r",
   ".lua": "lua",
   ".sh": "shellscript",
   ".bash": "shellscript",

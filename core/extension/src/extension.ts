@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import * as vscode from "vscode";
 import { ensureAgentStatusLoaded } from "./acp/agents";
 import { EisenOrchestrator } from "./orchestrator";
@@ -151,7 +152,7 @@ export function activate(context: vscode.ExtensionContext) {
       const chip = {
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
         filePath: document.uri.fsPath,
-        fileName: require("node:path").basename(document.uri.fsPath),
+        fileName: path.basename(document.uri.fsPath),
         languageId: document.languageId,
         range: selection.isEmpty
           ? undefined
