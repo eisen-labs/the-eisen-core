@@ -3,6 +3,8 @@ export interface AvailableAgent {
   name: string;
 }
 
+export type SessionMode = "single_agent" | "orchestrator";
+
 export interface AvailableCommand {
   name: string;
   description?: string;

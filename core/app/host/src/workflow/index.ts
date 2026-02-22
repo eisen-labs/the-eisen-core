@@ -35,7 +35,7 @@ export type { AgentModelConfig, OrchestratorAgents } from "./agents";
 
 // Workflow
 export { orchestrate, executeAndEvaluate } from "./orchestrate";
-export type { OrchestrationConfig, AgentAssignment } from "./orchestrate";
+export type { OrchestrationConfig, AgentAssignment, PendingApprovalData } from "./orchestrate";
 
 // Supporting utilities
 export { buildExecutionBatches } from "./topo-sort";

@@ -201,8 +201,8 @@ class Eisen {
                 : undefined,
           });
         },
-        onAddAgent: (agentType) => {
-          ipc.send({ type: "spawnAgent", agentType });
+        onAddAgent: (agentType, sessionMode) => {
+          ipc.send({ type: "spawnAgent", agentType, sessionMode });
         },
         onModeChange: (modeId) => {
           ipc.send({ type: "selectMode", modeId });
@@ -362,16 +362,27 @@ class Eisen {
 
   private rerender(): void {
     this.renderer.render(this.state, this.selectedId, this.selectedIds);
+    // Do NOT call topBar.apply() here — the tab list is owned by instanceList
+    // messages from the host. Graph snapshots/deltas have no agent data and
+    // would overwrite state.agents with an empty array, clearing all tabs.
   }
 
   private handleMessage(msg: HostMessage): void {
     switch (msg.type) {
-      case "mergedSnapshot":
+      case "mergedSnapshot": {
+        const savedAgents = this.state.agents;
         applySnapshot(this.state, msg as unknown as Snapshot);
+        // Snapshots from eisen-core carry no agent/tab data — preserve the
+        // agent list that was set by the most recent instanceList message.
+        this.state.agents = savedAgents;
         break;
-      case "mergedDelta":
+      }
+      case "mergedDelta": {
+        const savedAgents = this.state.agents;
         applyDelta(this.state, msg as unknown as Delta);
+        this.state.agents = savedAgents;
         break;
+      }
       case "agentUpdate": {
         const p = msg as unknown as { agents?: AgentInfo[] };
         if (p?.agents) {
@@ -438,7 +449,7 @@ class Eisen {
           this.state.agents = agents;
           this.topBar.apply(agents);
           for (const i of instances) {
-            if (i.isStreaming) this.topBar.setStreaming(i.key, true);
+            this.topBar.setStreaming(i.key, !!i.isStreaming);
           }
         }
         return;
@@ -451,6 +462,16 @@ class Eisen {
         } else {
           this.chat.clearAgent();
         }
+        return;
+      }
+      case "error": {
+        const errText = msg.text as string;
+        if (errText) this.chat.addError(errText);
+        return;
+      }
+      case "agentError": {
+        const errText = msg.text as string;
+        if (errText) this.chat.addError(errText);
         return;
       }
       case "connectionState":

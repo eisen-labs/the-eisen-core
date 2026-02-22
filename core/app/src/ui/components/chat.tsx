@@ -1,12 +1,19 @@
 // biome-ignore lint/correctness/noUnusedImports: JSX runtime
 import { h } from "../jsx-runtime";
 import { ICON } from "../panels/icons";
-import type { AvailableAgent, AvailableCommand, ContextChip, FileSearchResult, SessionMeta } from "../types";
+import type {
+  AvailableAgent,
+  AvailableCommand,
+  ContextChip,
+  FileSearchResult,
+  SessionMeta,
+  SessionMode,
+} from "../types";
 import { escapeHtml } from "../utils";
 
 export interface ChatCb {
   onSend(text: string, instanceId: string | null, chips: ContextChip[]): void;
-  onAddAgent(type: string): void;
+  onAddAgent(type: string, mode: SessionMode): void;
   onModeChange(id: string): void;
   onModelChange(id: string): void;
   onFileSearch(query: string): void;
@@ -44,6 +51,7 @@ export class Chat {
   private cmdIdx = -1;
   private agents: AvailableAgent[] = [];
   private open: string | null = null;
+  private agentMode: SessionMode = "single_agent";
 
   constructor(cb: ChatCb) {
     this.cb = cb;
@@ -156,16 +164,68 @@ export class Chat {
     this.emptyView.style.display = "none";
     this.chatView.style.display = "none";
     this.pickerView.style.display = "";
+    this.renderAgentPicker();
+  }
+
+  private renderAgentPicker(): void {
     this.pickerView.innerHTML = "";
     const spacer = (<div className="flex-1" />) as HTMLElement;
     const list = (
       <div className="mx-md mb-md bg-raised backdrop-blur-xl border border-border-subtle rounded-xl p-md flex flex-col gap-sm" />
     ) as HTMLElement;
-    for (const a of this.agents) {
-      const btn = (<div className={OPTION_OFF}>{a.name}</div>) as HTMLElement;
-      btn.addEventListener("click", () => this.cb.onAddAgent(a.id));
-      list.append(btn);
+
+    const modeRow = (
+      <div className="flex items-center justify-between px-xs" />
+    ) as HTMLElement;
+    const modeLabel = (
+      <div className="text-[10px] uppercase tracking-widest text-faint">Mode</div>
+    ) as HTMLElement;
+    const toggle = (
+      <div className="flex items-center gap-0.5 bg-border-subtle rounded-md p-[2px]" />
+    ) as HTMLElement;
+    const normalBtn = (
+      <button
+        type="button"
+        className={`px-2 py-1 text-[11px] rounded-[6px] transition-colors ${
+          this.agentMode === "single_agent" ? "bg-accent-muted text-accent" : "text-muted hover:text-foreground"
+        }`}
+      >
+        Normal
+      </button>
+    ) as HTMLButtonElement;
+    const orchBtn = (
+      <button
+        type="button"
+        className={`px-2 py-1 text-[11px] rounded-[6px] transition-colors ${
+          this.agentMode === "orchestrator" ? "bg-accent-muted text-accent" : "text-muted hover:text-foreground"
+        }`}
+      >
+        Orchestrator
+      </button>
+    ) as HTMLButtonElement;
+    normalBtn.addEventListener("click", () => {
+      if (this.agentMode !== "single_agent") {
+        this.agentMode = "single_agent";
+        this.renderAgentPicker();
+      }
+    });
+    orchBtn.addEventListener("click", () => {
+      this.cb.onAddAgent("orchestrator", "orchestrator");
+    });
+    toggle.append(normalBtn, orchBtn);
+    modeRow.append(modeLabel, toggle);
+    list.append(modeRow);
+
+    if (!this.agents.length) {
+      list.append((<div className={OPTION_OFF}>No providers available</div>) as HTMLElement);
+    } else {
+      for (const a of this.agents) {
+        const btn = (<div className={OPTION_OFF}>{a.name}</div>) as HTMLElement;
+        btn.addEventListener("click", () => this.cb.onAddAgent(a.id, this.agentMode));
+        list.append(btn);
+      }
     }
+
     this.pickerView.append(spacer, list);
   }
 
@@ -527,6 +587,16 @@ export class Chat {
     const list = this.activeId ? this.msgMap.get(this.activeId) : null;
     if (!list) return;
     for (const m of list) this.appendMsg(m);
+    this.messages.scrollTop = this.messages.scrollHeight;
+  }
+
+  addError(text: string): void {
+    if (!this.activeId) return;
+    const el = (
+      <div className="px-lg py-md text-sm whitespace-pre-wrap break-words rounded-xl bg-red-950/40 border border-red-900/50 text-red-300 mr-8 rounded-bl-sm" />
+    ) as HTMLElement;
+    el.textContent = text;
+    this.messages.append(el);
     this.messages.scrollTop = this.messages.scrollHeight;
   }
 

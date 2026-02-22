@@ -34,6 +34,7 @@ import { setCwd, getCwd, StateStore as Memento } from "./env";
 import { findFiles } from "./file-search";
 import { getAgent, getAgentsWithStatus, ensureAgentStatusLoaded } from "./acp/agents";
 import { ACPClient, type ContextChipData } from "./acp/client";
+import { CoreClient } from "./core-client";
 import { EisenOrchestrator, AGENT_COLORS } from "./orchestrator";
 import { FileSearchService } from "./file-search-service";
 import {
@@ -43,6 +44,7 @@ import {
   CostTracker,
   type OrchestrationConfig,
   type AgentAssignment,
+  type PendingApprovalData,
   type WorkspaceContext,
   type OrchestrationOutput,
   type OrchestratorAgents,
@@ -67,6 +69,29 @@ function parseCwd(): string {
 const cwd = parseCwd();
 setCwd(cwd);
 
+// Load .env from the workspace directory so API keys (OPENAI_API_KEY etc.)
+// are available to Mastra agents without requiring them in the system env.
+try {
+  const envPath = `${cwd}/.env`;
+  if (fs.existsSync(envPath)) {
+    const lines = fs.readFileSync(envPath, "utf8").split("\n");
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const eq = trimmed.indexOf("=");
+      if (eq === -1) continue;
+      const key = trimmed.slice(0, eq).trim();
+      const value = trimmed.slice(eq + 1).trim();
+      if (key && !(key in process.env)) {
+        process.env[key] = value;
+      }
+    }
+    console.error(`[eisen-host] Loaded .env from ${envPath}`);
+  }
+} catch (e) {
+  console.error("[eisen-host] Failed to load .env:", e);
+}
+
 // ---------------------------------------------------------------------------
 // IPC helpers
 // ---------------------------------------------------------------------------
@@ -75,12 +100,67 @@ function send(message: Record<string, unknown>): void {
   process.stdout.write(JSON.stringify(message) + "\n");
 }
 
+function normalizeAction(action?: string): "read" | "write" | "search" {
+  if (action === "write") return "write";
+  if (action === "search") return "search";
+  return "read";
+}
+
+function toMergedSnapshot(msg: any) {
+  const nodes: Record<string, any> = {};
+  if (msg?.nodes && typeof msg.nodes === "object") {
+    for (const [path, node] of Object.entries<any>(msg.nodes)) {
+      const action = normalizeAction(node?.last_action);
+      nodes[path] = {
+        inContext: Boolean(node?.in_context),
+        changed: action === "write",
+        lastAction: action,
+      };
+    }
+  }
+  return {
+    type: "mergedSnapshot",
+    seq: msg?.seq ?? 0,
+    nodes,
+    calls: [],
+    agents: [],
+  };
+}
+
+function toMergedDelta(msg: any) {
+  const updates: Array<Record<string, any>> = [];
+  if (Array.isArray(msg?.updates)) {
+    for (const u of msg.updates) {
+      const action = normalizeAction(u?.last_action);
+      updates.push({
+        id: u?.path,
+        action,
+        inContext: u?.in_context,
+        changed: action === "write",
+      });
+    }
+  }
+  if (Array.isArray(msg?.removed)) {
+    for (const path of msg.removed) {
+      updates.push({ id: path, action: "remove" });
+    }
+  }
+  return {
+    type: "mergedDelta",
+    seq: msg?.seq ?? 0,
+    updates,
+    agents: [],
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Global state
 // ---------------------------------------------------------------------------
 
 const globalState = new Memento();
 const orchestrator = new EisenOrchestrator();
+const coreClients = new Map<string, CoreClient>();
+const useLegacyGraph = false;
 const fileSearchService = new FileSearchService(cwd);
 
 const SELECTED_AGENT_KEY = "eisen.selectedAgent";
@@ -107,18 +187,30 @@ function agentShortName(agentType: string): string {
 // Agent instances
 // ---------------------------------------------------------------------------
 
+type SessionMode = "single_agent" | "orchestrator";
+
 interface AgentInstance {
   key: string;
   agentType: string;
   label: string;
+  sessionMode: SessionMode;
   client: ACPClient;
   acpSessionId: string | null;
+  coreSessionId: string | null;
   hasAcpSession: boolean;
   hasRestoredModeModel: boolean;
   stderrBuffer: string;
   streamingText: string;
   color: string;
   isStreaming: boolean;
+  /** True once the eisen-core session RPC has succeeded for this instance */
+  coreSessionReady: boolean;
+  /** In-flight promise for ensureCoreSession to prevent concurrent calls */
+  coreSessionPromise: Promise<void> | null;
+  /** Timestamp of last ensureCoreSession attempt, for backoff */
+  coreSessionLastAttempt: number;
+  /** Key of the orchestrator virtual instance that spawned this sub-agent, if any */
+  orchestratorKey?: string;
 }
 
 interface ManagedTerminal {
@@ -140,6 +232,31 @@ let nextColorIndex = 0;
 const connectedInstanceIds = new Set<string>();
 const terminals = new Map<string, ManagedTerminal>();
 let terminalCounter = 0;
+
+/**
+ * Insertion-order list of ALL instance keys (both virtual orchestrators and
+ * regular agent instances), used to preserve chronological tab order while
+ * still grouping each orchestrator's sub-agents directly to its right.
+ * Sub-agents (with orchestratorKey set) are NOT added here; they are injected
+ * inline after their parent when building the display list.
+ */
+const instanceOrder: string[] = [];
+
+// ---------------------------------------------------------------------------
+// Virtual orchestrator instances (no ACP agent, pure Mastra workflow)
+// ---------------------------------------------------------------------------
+
+interface VirtualInstance {
+  key: string;
+  label: string;
+  agentType: "orchestrator";
+  color: string;
+  isStreaming: boolean;
+  /** Set when the orchestration workflow is waiting for user approval. */
+  pendingApproval?: PendingApprovalData & { config: OrchestrationConfig };
+}
+
+const virtualInstances = new Map<string, VirtualInstance>();
 
 function getActiveInstance(): AgentInstance | undefined {
   return currentInstanceKey ? agentInstances.get(currentInstanceKey) : undefined;
@@ -164,16 +281,47 @@ interface InstanceInfo {
 
 function getInstanceList(): InstanceInfo[] {
   const list: InstanceInfo[] = [];
-  for (const inst of agentInstances.values()) {
-    list.push({
-      key: inst.key,
-      label: inst.label,
-      agentType: inst.agentType,
-      color: inst.color,
-      connected: inst.client.isConnected(),
-      isStreaming: inst.isStreaming,
-    });
+
+  for (const key of instanceOrder) {
+    const vi = virtualInstances.get(key);
+    if (vi) {
+      // Orchestrator tab followed immediately by its sub-agents.
+      list.push({
+        key: vi.key,
+        label: vi.label,
+        agentType: vi.agentType,
+        color: vi.color,
+        connected: true,
+        isStreaming: vi.isStreaming,
+      });
+      for (const inst of agentInstances.values()) {
+        if (inst.orchestratorKey === vi.key) {
+          list.push({
+            key: inst.key,
+            label: inst.label,
+            agentType: inst.agentType,
+            color: inst.color,
+            connected: inst.client.isConnected(),
+            isStreaming: inst.isStreaming,
+          });
+        }
+      }
+      continue;
+    }
+
+    const inst = agentInstances.get(key);
+    if (inst && !inst.orchestratorKey) {
+      list.push({
+        key: inst.key,
+        label: inst.label,
+        agentType: inst.agentType,
+        color: inst.color,
+        connected: inst.client.isConnected(),
+        isStreaming: inst.isStreaming,
+      });
+    }
   }
+
   return list;
 }
 
@@ -183,6 +331,17 @@ function sendInstanceList(): void {
     instances: getInstanceList(),
     currentInstanceKey,
   });
+}
+
+function updateGraphSelection(): void {
+  const inst = getActiveInstance();
+  if (!inst) return;
+  const coreSessionId = inst.coreSessionId;
+  if (!coreSessionId) return;
+  const core = coreClients.get(inst.key);
+  if (!core) return;
+  core.setStreamFilter({ sessionId: coreSessionId });
+  core.requestSnapshot(coreSessionId);
 }
 
 function setupClientHandlers(client: ACPClient, instanceKey: string): void {
@@ -220,12 +379,11 @@ function setupClientHandlers(client: ACPClient, instanceKey: string): void {
       handleSessionUpdate(update);
     } else {
       const bgInst = agentInstances.get(instanceKey);
-      if (
-        bgInst &&
-        update.update?.sessionUpdate === "agent_message_chunk" &&
-        update.update?.content?.type === "text"
-      ) {
-        bgInst.streamingText += update.update.content.text;
+      if (bgInst && update.update?.sessionUpdate === "agent_message_chunk" && update.update?.content?.type === "text") {
+        const chunk = update.update.content.text as string;
+        bgInst.streamingText += chunk;
+        // Forward the chunk with instanceId so the frontend can buffer it per-tab.
+        send({ type: "streamChunk", text: chunk, instanceId: instanceKey });
       }
     }
   });
@@ -269,7 +427,7 @@ function setupClientHandlers(client: ACPClient, instanceKey: string): void {
   });
 }
 
-function createInstance(agentType: string): AgentInstance {
+function createInstance(agentType: string, sessionMode: SessionMode, orchestratorKey?: string): AgentInstance {
   if (agentInstances.size >= MAX_AGENT_INSTANCES) {
     throw new Error(
       `Maximum number of concurrent agents (${MAX_AGENT_INSTANCES}) reached. ` +
@@ -300,18 +458,25 @@ function createInstance(agentType: string): AgentInstance {
     key,
     agentType,
     label: key,
+    sessionMode,
     client,
     acpSessionId: null,
+    coreSessionId: null,
     hasAcpSession: false,
     hasRestoredModeModel: false,
     stderrBuffer: "",
     streamingText: "",
     color,
     isStreaming: false,
+    coreSessionReady: false,
+    coreSessionPromise: null,
+    coreSessionLastAttempt: 0,
+    orchestratorKey,
   };
 
   setupClientHandlers(client, key);
   agentInstances.set(key, instance);
+  if (!orchestratorKey) instanceOrder.push(key);
   return instance;
 }
 
@@ -320,15 +485,21 @@ function createInstance(agentType: string): AgentInstance {
 // ---------------------------------------------------------------------------
 
 orchestrator.onMergedSnapshot = (snapshot) => {
-  send({ type: "mergedSnapshot", ...snapshot });
+  if (useLegacyGraph) {
+    send({ type: "mergedSnapshot", ...snapshot });
+  }
 };
 
 orchestrator.onMergedDelta = (delta) => {
-  send({ type: "mergedDelta", ...delta });
+  if (useLegacyGraph) {
+    send({ type: "mergedDelta", ...delta });
+  }
 };
 
 orchestrator.onAgentUpdate = (agents) => {
-  send({ type: "agentUpdate", agents });
+  if (useLegacyGraph) {
+    send({ type: "agentUpdate", agents });
+  }
 };
 
 async function registerAgentWithOrchestrator(client: ACPClient): Promise<void> {
@@ -344,6 +515,135 @@ async function registerAgentWithOrchestrator(client: ACPClient): Promise<void> {
   }
 }
 
+async function ensureCoreClient(inst: AgentInstance): Promise<CoreClient | null> {
+  if (coreClients.has(inst.key)) return coreClients.get(inst.key) ?? null;
+  const port = await inst.client.waitForTcpPort().catch(() => null);
+  if (!port) return null;
+  const core = new CoreClient((msg) => {
+    if (currentInstanceKey !== inst.key) return;
+    if (msg?.type === "snapshot") {
+      send(toMergedSnapshot(msg));
+    } else if (msg?.type === "delta") {
+      send(toMergedDelta(msg));
+    } else if (msg?.type === "usage") {
+      send({ type: "usageUpdate", used: msg.used, size: msg.size, cost: msg.cost });
+    }
+  });
+  core.connect(port);
+  coreClients.set(inst.key, core);
+  return core;
+}
+
+const CORE_SESSION_RETRY_COOLDOWN_MS = 10_000;
+
+async function ensureCoreSession(inst: AgentInstance): Promise<void> {
+  // If already set up, just refresh the stream filter and return
+  if (inst.coreSessionReady && inst.coreSessionId) {
+    const core = coreClients.get(inst.key);
+    if (core) {
+      core.setStreamFilter({ sessionId: inst.coreSessionId });
+      core.requestSnapshot(inst.coreSessionId);
+    }
+    return;
+  }
+
+  // Deduplicate concurrent calls — return the in-flight promise if one exists
+  if (inst.coreSessionPromise) {
+    return inst.coreSessionPromise;
+  }
+
+  // Cooldown: don't retry too quickly after a failure
+  const now = Date.now();
+  if (inst.coreSessionLastAttempt > 0 && now - inst.coreSessionLastAttempt < CORE_SESSION_RETRY_COOLDOWN_MS) {
+    return;
+  }
+
+  inst.coreSessionLastAttempt = now;
+  inst.coreSessionPromise = doEnsureCoreSession(inst).finally(() => {
+    inst.coreSessionPromise = null;
+  });
+
+  return inst.coreSessionPromise;
+}
+
+/**
+ * Ensure the ACP client is connected and has an active session.
+ * This is the minimum required before sending a message. It does NOT
+ * set up the eisen-core graph session (that's handled separately).
+ */
+async function ensureAcpSession(inst: AgentInstance): Promise<void> {
+  const state = inst.client.getState();
+  if (state === "connecting") {
+    await new Promise<void>((resolve, reject) => {
+      const unsub = inst.client.setOnStateChange((s) => {
+        if (s === "connected") { unsub(); resolve(); }
+        else if (s === "disconnected" || s === "error") { unsub(); reject(new Error(`Connection failed: ${s}`)); }
+      });
+    });
+  } else if (state !== "connected") {
+    await inst.client.connect();
+  }
+
+  if (!inst.hasAcpSession) {
+    const workingDir = getCwd();
+    const resp = await inst.client.newSession(workingDir);
+    inst.acpSessionId = resp.sessionId;
+    inst.hasAcpSession = true;
+    sendSessionMetadata();
+  } else if (inst.acpSessionId) {
+    inst.client.setActiveSession(inst.acpSessionId);
+  }
+}
+
+async function doEnsureCoreSession(inst: AgentInstance): Promise<void> {
+  // ACP connection + session must exist first
+  await ensureAcpSession(inst);
+
+  const core = await ensureCoreClient(inst);
+  if (!core) return;
+
+  const agentId = inst.client.instanceId;
+  if (!agentId) return;
+
+  if (inst.sessionMode === "single_agent") {
+    if (inst.acpSessionId && inst.coreSessionId !== inst.acpSessionId) {
+      inst.coreSessionId = inst.acpSessionId;
+    }
+  }
+
+  if (!inst.coreSessionId) {
+    inst.coreSessionId =
+      inst.sessionMode === "single_agent" && inst.acpSessionId
+        ? inst.acpSessionId
+        : `${agentId}-${Date.now().toString(36)}`;
+  }
+
+  const session = await core.rpc("create_session", {
+    agent_id: agentId,
+    session_id: inst.coreSessionId,
+    mode: inst.sessionMode,
+  });
+  inst.coreSessionId = session?.session_id ?? inst.coreSessionId;
+
+  const coreSessionId = inst.coreSessionId;
+  if (!coreSessionId) return;
+  if (inst.sessionMode === "orchestrator" && inst.acpSessionId) {
+    const providerKey = { agent_id: agentId, session_id: inst.acpSessionId };
+    const providers = [providerKey];
+    await core.rpc("set_orchestrator_providers", {
+      agent_id: agentId,
+      session_id: coreSessionId,
+      providers,
+    });
+  }
+
+  await core.rpc("set_active_session", { agent_id: agentId, session_id: coreSessionId });
+  core.setStreamFilter({ sessionId: coreSessionId });
+  core.requestSnapshot(coreSessionId);
+
+  inst.coreSessionReady = true;
+}
+
 // ---------------------------------------------------------------------------
 // Session update handler
 // ---------------------------------------------------------------------------
@@ -355,7 +655,7 @@ function handleSessionUpdate(notification: SessionNotification): void {
   if (update.sessionUpdate === "agent_message_chunk") {
     if (update.content.type === "text") {
       if (inst) inst.streamingText += update.content.text;
-      send({ type: "streamChunk", text: update.content.text });
+      send({ type: "streamChunk", text: update.content.text, instanceId: currentInstanceKey });
     }
   } else if (update.sessionUpdate === "tool_call") {
     send({
@@ -415,6 +715,22 @@ function handleSessionUpdate(notification: SessionNotification): void {
 function handleStderr(_text: string, instanceKey: string): void {
   const inst = agentInstances.get(instanceKey);
   if (!inst) return;
+
+  // Check for rate limit errors
+  const rateLimitMatch = inst.stderrBuffer.match(/rate_limit_exceeded|Rate limit reached/i);
+  if (rateLimitMatch) {
+    // Extract retry time if available
+    const retryMatch = inst.stderrBuffer.match(/try again in (\d+)s/i);
+    const retryTime = retryMatch ? retryMatch[1] : "a few";
+    const message = `Rate limit exceeded. Please wait ${retryTime} seconds before sending another message.`;
+
+    if (currentInstanceKey === instanceKey) {
+      send({ type: "agentError", text: message });
+    }
+    inst.stderrBuffer = "";
+    return;
+  }
+
   const errorMatch = inst.stderrBuffer.match(/(\w+Error):\s*(\w+)?\s*\n?\s*data:\s*\{([^}]+)\}/);
   if (errorMatch) {
     const errorType = errorMatch[1];
@@ -606,9 +922,22 @@ async function handleReleaseTerminal(params: ReleaseTerminalRequest): Promise<Re
 // ---------------------------------------------------------------------------
 
 function switchToInstance(instanceKey: string): void {
-  if (instanceKey === currentInstanceKey) return;
-  const target = agentInstances.get(instanceKey);
-  if (!target) return;
+    if (instanceKey === currentInstanceKey) return;
+
+    // Handle virtual orchestrator instances
+    const vi = virtualInstances.get(instanceKey);
+    if (vi) {
+      currentInstanceKey = instanceKey;
+      globalState.update(SELECTED_AGENT_KEY, "orchestrator");
+      send({ type: "instanceChanged", instanceKey, isStreaming: vi.isStreaming });
+      send({ type: "connectionState", state: "connected" });
+      sendInstanceList();
+      send({ type: "sessionMetadata", modes: null, models: null });
+      return;
+    }
+
+    const target = agentInstances.get(instanceKey);
+    if (!target) return;
 
   currentInstanceKey = instanceKey;
   globalState.update(SELECTED_AGENT_KEY, target.agentType);
@@ -624,33 +953,92 @@ function switchToInstance(instanceKey: string): void {
   });
   sendInstanceList();
 
-  if (target.client.isConnected()) {
-    sendSessionMetadata();
-  } else {
-    send({ type: "sessionMetadata", modes: null, models: null });
-  }
+    if (target.client.isConnected()) {
+      sendSessionMetadata();
+    } else {
+      send({ type: "sessionMetadata", modes: null, models: null });
+    }
+
+    ensureCoreSession(target).catch((e) =>
+      console.error("[Host] Failed to initialize core session:", e),
+    );
+    updateGraphSelection();
 }
 
 // ---------------------------------------------------------------------------
 // Message handlers
 // ---------------------------------------------------------------------------
 
-function handleSpawnAgent(agentType: string): void {
-  const agent = getAgent(agentType);
-  if (!agent) return;
+function handleSpawnOrchestratorVirtual(): void {
+  const count = (instanceCounters.get("orchestrator") ?? 0) + 1;
+  instanceCounters.set("orchestrator", count);
+  const key = `orch${count}`;
+  const color = AGENT_COLORS[nextColorIndex % AGENT_COLORS.length];
+  nextColorIndex++;
 
-  try {
-    const instance = createInstance(agentType);
-    switchToInstance(instance.key);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Failed to spawn agent";
-    send({ type: "error", text: message });
+  const vi: VirtualInstance = { key, label: key, agentType: "orchestrator", color, isStreaming: false };
+  virtualInstances.set(key, vi);
+  instanceOrder.push(key);
+
+  currentInstanceKey = key;
+  globalState.update(SELECTED_AGENT_KEY, "orchestrator");
+  send({ type: "instanceChanged", instanceKey: key, isStreaming: false });
+  send({ type: "connectionState", state: "connected" });
+  sendInstanceList();
+  send({ type: "sessionMetadata", modes: null, models: null });
+
+  const model = process.env.EISEN_ORCHESTRATOR_MODEL ?? "anthropic/claude-sonnet-4-20250514";
+  const displayModel = model.split("/").pop() ?? model;
+  send({
+    method: "chatMessage",
+    params: { from: "agent", text: `I'm ${displayModel}, ready to orchestrate`, instanceId: key },
+  });
+}
+
+function handleSpawnAgent(agentType: string, sessionMode: SessionMode = "single_agent"): void {
+    if (agentType === "orchestrator") {
+      handleSpawnOrchestratorVirtual();
+      return;
+    }
+
+    const agent = getAgent(agentType);
+    if (!agent) return;
+
+    try {
+      const instance = createInstance(agentType, sessionMode);
+      switchToInstance(instance.key);
+      ensureCoreSession(instance).catch((e) =>
+        console.error("[Host] Failed to initialize core session:", e),
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to spawn agent";
+      send({ type: "error", text: message });
   }
 }
 
 function handleCloseInstance(instanceKey: string): void {
-  const instance = agentInstances.get(instanceKey);
-  if (!instance) return;
+  // Handle virtual orchestrator instances
+  if (virtualInstances.has(instanceKey)) {
+    virtualInstances.delete(instanceKey);
+    const viOrderIdx = instanceOrder.indexOf(instanceKey);
+    if (viOrderIdx !== -1) instanceOrder.splice(viOrderIdx, 1);
+    if (currentInstanceKey === instanceKey) {
+      const remaining = [...Array.from(agentInstances.keys()), ...Array.from(virtualInstances.keys())];
+      if (remaining.length > 0) {
+        switchToInstance(remaining[remaining.length - 1]);
+      } else {
+        currentInstanceKey = null;
+        instanceCounters.clear();
+        nextColorIndex = 0;
+        send({ type: "instanceChanged", instanceKey: null, isStreaming: false });
+      }
+    }
+    sendInstanceList();
+    return;
+  }
+
+    const instance = agentInstances.get(instanceKey);
+    if (!instance) return;
 
   const instId = instance.client.instanceId;
   try {
@@ -662,10 +1050,18 @@ function handleCloseInstance(instanceKey: string): void {
     orchestrator.removeAgent(instId);
   }
 
+  const core = coreClients.get(instanceKey);
+  if (core) {
+    core.disconnect();
+    coreClients.delete(instanceKey);
+  }
+
   agentInstances.delete(instanceKey);
+  const orderIdx = instanceOrder.indexOf(instanceKey);
+  if (orderIdx !== -1) instanceOrder.splice(orderIdx, 1);
 
   if (currentInstanceKey === instanceKey) {
-    const remaining = Array.from(agentInstances.keys());
+    const remaining = [...Array.from(agentInstances.keys()), ...Array.from(virtualInstances.keys())];
     if (remaining.length > 0) {
       switchToInstance(remaining[remaining.length - 1]);
     } else {
@@ -692,6 +1088,53 @@ async function handleUserMessage(
     range?: { startLine: number; endLine: number };
   }>,
 ): Promise<void> {
+  // Route to Mastra workflow for virtual orchestrator instances
+  const vi = currentInstanceKey ? virtualInstances.get(currentInstanceKey) : undefined;
+  if (vi) {
+    send({ type: "userMessage", text });
+
+    const sendChatMsg = (msg: string) =>
+      send({ method: "chatMessage", params: { from: "agent", text: msg, instanceId: vi.key } });
+
+    // If waiting for approval, this message is the user's response.
+    if (vi.pendingApproval) {
+      const pending = vi.pendingApproval;
+      vi.pendingApproval = undefined;
+
+      if (text.trim().toLowerCase() === "cancel") {
+        sendChatMsg("Orchestration cancelled.");
+        return;
+      }
+
+      sendChatMsg("Executing approved plan...");
+      vi.isStreaming = true;
+      try {
+        const result = await executeAndEvaluate(
+          pending.config,
+          pending.assignments,
+          pending.context,
+          pending.cost,
+          pending.runId,
+          pending.runStart,
+        );
+        if (result.status !== "completed" && result.status !== "done") {
+          sendChatMsg(`Orchestration finished with status: ${result.status}`);
+        }
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        sendChatMsg(`Error during execution: ${msg}`);
+      } finally {
+        vi.isStreaming = false;
+      }
+      return;
+    }
+
+    vi.isStreaming = true;
+    await handleOrchestrate(text);
+    vi.isStreaming = false;
+    return;
+  }
+
   const inst = getActiveInstance();
   if (!inst) return;
 
@@ -707,24 +1150,18 @@ async function handleUserMessage(
   });
 
   try {
-    if (!inst.client.isConnected()) {
-      await inst.client.connect();
-    }
+    // Ensure ACP is connected and has a session — this is required for messaging.
+    await ensureAcpSession(inst);
 
-    if (!inst.hasAcpSession) {
-      const workingDir = getCwd();
-      const resp = await inst.client.newSession(workingDir);
-      inst.acpSessionId = resp.sessionId;
-      inst.hasAcpSession = true;
-      sendSessionMetadata();
-    } else if (inst.acpSessionId) {
-      inst.client.setActiveSession(inst.acpSessionId);
-    }
+    // Kick off eisen-core graph session in the background — failure is non-fatal.
+    ensureCoreSession(inst).catch((e) =>
+      console.error("[Host] Non-fatal: failed to set up core session:", e),
+    );
 
     inst.streamingText = "";
     inst.stderrBuffer = "";
     inst.isStreaming = true;
-    send({ type: "streamStart" });
+    send({ type: "streamStart", instanceId: inst.key });
 
     const chipData: ContextChipData[] | undefined = contextChips?.map((c) => ({
       filePath: c.filePath,
@@ -737,11 +1174,12 @@ async function handleUserMessage(
     inst.isStreaming = false;
     if (inst.streamingText.length === 0) {
       send({ type: "error", text: "Agent returned no response." });
-      send({ type: "streamEnd", stopReason: "error", html: "" });
+      send({ type: "streamEnd", instanceId: inst.key, stopReason: "error", html: "" });
     } else {
       const renderedHtml = marked.parse(inst.streamingText) as string;
       send({
         type: "streamEnd",
+        instanceId: inst.key,
         stopReason: response.stopReason,
         html: renderedHtml,
       });
@@ -751,7 +1189,7 @@ async function handleUserMessage(
     inst.isStreaming = false;
     const errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
     send({ type: "error", text: `Error: ${errorMessage}` });
-    send({ type: "streamEnd", stopReason: "error", html: "" });
+    send({ type: "streamEnd", instanceId: inst.key, stopReason: "error", html: "" });
     inst.streamingText = "";
     inst.stderrBuffer = "";
   }
@@ -787,16 +1225,7 @@ async function handleConnect(): Promise<void> {
   const inst = getActiveInstance();
   if (!inst) return;
   try {
-    if (!inst.client.isConnected()) {
-      await inst.client.connect();
-    }
-    if (!inst.hasAcpSession) {
-      const workingDir = getCwd();
-      const resp = await inst.client.newSession(workingDir);
-      inst.acpSessionId = resp.sessionId;
-      inst.hasAcpSession = true;
-      sendSessionMetadata();
-    }
+    await ensureCoreSession(inst);
   } catch (error) {
     send({
       type: "error",
@@ -824,6 +1253,7 @@ async function handleNewChat(): Promise<void> {
       inst.acpSessionId = resp.sessionId;
       inst.hasAcpSession = true;
       sendSessionMetadata();
+      await ensureCoreSession(inst);
     }
   } catch (error) {
     console.error("[Host] Failed to create new session:", error);
@@ -914,7 +1344,50 @@ async function handleOrchestrate(
   effort: string = "medium",
   autoApprove: boolean = false,
 ): Promise<void> {
+  const instanceId = currentInstanceKey;
+
+  // Tracks ACPClient → instanceKey for workflow-spawned sub-agent tabs.
+  const clientInstanceMap = new Map<ACPClient, string>();
+
+  const sendChatMsg = (text: string) => {
+    send({
+      method: "chatMessage",
+      params: { from: "agent", text, instanceId },
+    });
+  };
+
+  // Wrap the IPC send to surface key orchestration events as chat bubbles.
+  const orchestrateSend = (msg: Record<string, unknown>) => {
+    send(msg);
+    const STATE_LABELS: Record<string, string> = {
+      "loading-context": "Loading workspace context...",
+      decomposing: "Decomposing task into subtasks...",
+      assigning: "Assigning agents to subtasks...",
+      confirming: "Confirming plan...",
+      executing: "Executing subtasks with ACP agents...",
+      evaluating: "Evaluating results...",
+    };
+    if (msg.type === "state" && typeof msg.state === "string") {
+      const label = STATE_LABELS[msg.state];
+      if (label) sendChatMsg(label);
+    } else if (msg.type === "decomposition" && Array.isArray(msg.subtasks)) {
+      const lines = (msg.subtasks as Array<{ description: string }>)
+        .map((s, i) => `${i + 1}. ${s.description}`)
+        .join("\n");
+      sendChatMsg(`Decomposed into ${msg.subtasks.length} subtask(s):\n${lines}`);
+    } else if (msg.type === "progress") {
+      const { subtaskIndex, agentId, status } = msg as Record<string, unknown>;
+      sendChatMsg(`Subtask ${subtaskIndex}: ${agentId} → ${status}`);
+    } else if (msg.type === "result") {
+      const results = (msg.subtaskResults as Array<{ status: string }>) ?? [];
+      const completed = results.filter((r) => r.status === "completed").length;
+      sendChatMsg(`Done! ${completed}/${results.length} subtasks completed.`);
+    }
+  };
+
   try {
+    sendChatMsg("Starting orchestration...");
+
     const config: OrchestrationConfig = {
       workspacePath: getCwd(),
       userIntent: intent,
@@ -922,27 +1395,58 @@ async function handleOrchestrate(
       autoApprove,
       maxAgents: MAX_AGENT_INSTANCES,
       agents: getOrchestratorAgents(),
-      send,
+      send: orchestrateSend,
+      createACPClient: (agentType: string) => {
+        const agent = getAgent(agentType);
+        if (!agent) throw new Error(`Unknown agent for orchestration: ${agentType}`);
+        const instance = createInstance(agentType, "single_agent", instanceId ?? undefined);
+        clientInstanceMap.set(instance.client, instance.key);
+        sendInstanceList();
+        return instance.client;
+      },
+      onSubtaskStart: (client, subtask, agentId) => {
+        const key = clientInstanceMap.get(client);
+        if (!key) return;
+        const inst = agentInstances.get(key);
+        if (inst) inst.isStreaming = true;
+        send({
+          method: "chatMessage",
+          params: {
+            from: "user",
+            text: `Subtask: ${subtask.description}\nRegion: ${subtask.region}`,
+            instanceId: key,
+          },
+        });
+        sendInstanceList();
+      },
+      onSubtaskComplete: (client, subtask, agentOutput) => {
+        const key = clientInstanceMap.get(client);
+        if (!key) return;
+        const inst = agentInstances.get(key);
+        if (inst) inst.isStreaming = false;
+        send({
+          method: "chatMessage",
+          params: { from: "agent", text: agentOutput, instanceId: key },
+        });
+        sendInstanceList();
+      },
+      onPendingApproval: (data) => {
+        const vi = instanceId ? virtualInstances.get(instanceId) : undefined;
+        if (vi) vi.pendingApproval = { ...data, config };
+      },
     };
 
     const result = await orchestrate(config);
 
     if (result.status === "pending_approval") {
-      // Store the pending state for the approve handler.
-      // The actual assignments and context were already sent to the UI
-      // via send() inside orchestrate(). We need to store them so we
-      // can resume when the user approves.
-      //
-      // NOTE: In the current architecture, orchestrate() returns early
-      // for pending_approval before building the assignments list.
-      // The full approve/resume cycle will be implemented in a follow-up
-      // once the Tauri frontend sends approve messages.
+      sendChatMsg("Plan ready. Approve to proceed, or say 'cancel' to abort.");
       console.error("[eisen-host] Orchestration awaiting user approval");
     }
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error("[eisen-host] Orchestration error:", msg);
     send({ type: "orchestrationError", message: msg });
+    sendChatMsg(`Error: ${msg}`);
   }
 }
 
@@ -993,7 +1497,7 @@ async function handleMessage(message: Record<string, any>): Promise<void> {
       break;
     case "spawnAgent":
       if (message.agentType) {
-        handleSpawnAgent(message.agentType);
+        handleSpawnAgent(message.agentType, message.sessionMode as SessionMode | undefined);
       }
       break;
     case "switchInstance":
@@ -1051,7 +1555,7 @@ async function handleMessage(message: Record<string, any>): Promise<void> {
       // TODO: Implement retry of failed subtasks from last run
       send({ type: "error", text: "Retry not yet implemented" });
       break;
-    case "ready": {
+  case "ready": {
       // Send current connection state
       const activeClient = getActiveClient();
       if (activeClient) {
@@ -1075,6 +1579,7 @@ async function handleMessage(message: Record<string, any>): Promise<void> {
         send({ type: "streamingState", isStreaming: active.isStreaming });
       }
       sendSessionMetadata();
+      updateGraphSelection();
       break;
     }
   }

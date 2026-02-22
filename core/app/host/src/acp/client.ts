@@ -410,6 +410,9 @@ export class ACPClient {
   private static readonly STDERR_THROTTLE_MS = 50;
   private static readonly STDERR_BUFFER_MAX = 16 * 1024;
 
+  // Connection promise cache to prevent concurrent connection attempts
+  private connectPromise: Promise<InitializeResponse> | null = null;
+
   constructor(options?: ACPClientOptions) {
     this.agentConfig = options?.agentConfig ?? getDefaultAgent();
     this.spawnFn = options?.spawn ?? (nodeSpawn as SpawnFunction);
@@ -538,8 +541,14 @@ export class ACPClient {
   }
 
   async connect(): Promise<InitializeResponse> {
-    if (this.state === "connected" || this.state === "connecting") {
-      throw new Error("Already connected or connecting");
+    // Return existing connection promise if one is in progress
+    if (this.connectPromise) {
+      return this.connectPromise;
+    }
+
+    // If already connected, return a resolved promise with cached response
+    if (this.state === "connected") {
+      return Promise.resolve({} as InitializeResponse);
     }
 
     if (!this.skipAvailabilityCheck && !isAgentAvailable(this.agentConfig.id)) {
@@ -567,6 +576,20 @@ export class ACPClient {
     this.rejectTcpPortWaiters("Connection reset");
 
     this.setState("connecting");
+
+    // Create the connection promise
+    this.connectPromise = this.doConnect();
+    
+    try {
+      const result = await this.connectPromise;
+      return result;
+    } finally {
+      // Clear the promise cache after completion (success or failure)
+      this.connectPromise = null;
+    }
+  }
+
+  private async doConnect(): Promise<InitializeResponse> {
 
     try {
       const { command, args } = this.buildSpawnCommand();
@@ -763,6 +786,8 @@ export class ACPClient {
       return initResponse;
     } catch (error) {
       this.setState("error");
+      // Clean up TCP port waiters on connection failure
+      this.rejectTcpPortWaiters("Connection failed");
       throw error;
     }
   }
@@ -875,6 +900,8 @@ export class ACPClient {
     console.error(
       `[ACP] dispose() called for agent "${this.agentConfig.id}" (instanceId=${this._instanceId}, state=${this.state})`,
     );
+    // Clear connection promise to prevent hanging promises
+    this.connectPromise = null;
     if (this.process) {
       this.process.kill();
       this.process = null;

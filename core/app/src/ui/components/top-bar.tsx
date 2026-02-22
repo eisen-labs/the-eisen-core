@@ -80,11 +80,21 @@ export class TopBar {
       this.dots.set(a.instanceId, dot);
     }
 
-    if (!this.selected && agents.length > 0) this.select(agents[0].instanceId);
-    if (this.selected && !agents.some((a) => a.instanceId === this.selected)) {
-      if (agents.length > 0) this.select(agents[0].instanceId);
+    // Reconcile selection — but only notify the host if the selected tab
+    // genuinely changed (avoids feedback loops where apply→onSelect→switchInstance
+    // →instanceList→apply→onSelect repeats indefinitely).
+    if (!this.selected && agents.length > 0) {
+      this.selectSilent(agents[0].instanceId);
+    } else if (this.selected && !agents.some((a) => a.instanceId === this.selected)) {
+      if (agents.length > 0) this.selectSilent(agents[0].instanceId);
       else this.selected = null;
     }
+  }
+
+  /** Update visual selection without notifying the host (used during apply). */
+  private selectSilent(id: string): void {
+    this.selected = id;
+    for (const [k, el] of this.tabs) el.className = k === id ? TAB_ON : TAB_OFF;
   }
 
   select(id: string): void {

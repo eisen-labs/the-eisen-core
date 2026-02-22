@@ -41,6 +41,14 @@ import type {
 // Types
 // ---------------------------------------------------------------------------
 
+export interface PendingApprovalData {
+  assignments: AgentAssignment[];
+  context: WorkspaceContext;
+  cost: CostTracker;
+  runId: string;
+  runStart: number;
+}
+
 export interface OrchestrationConfig {
   workspacePath: string;
   userIntent: string;
@@ -59,6 +67,22 @@ export interface OrchestrationConfig {
   };
   /** Factory to create an ACP client for a given agent type. */
   createACPClient?: (agentType: string) => ACPClient;
+  /**
+   * Called when the workflow needs user approval before executing.
+   * The caller should store the data and resume via executeAndEvaluate
+   * once the user approves.
+   */
+  onPendingApproval?: (data: PendingApprovalData) => void;
+  /**
+   * Called just before an ACP client starts executing a subtask.
+   * The host uses this to register the client as a named tab.
+   */
+  onSubtaskStart?: (client: ACPClient, subtask: Subtask, agentId: string) => void;
+  /**
+   * Called after an ACP client finishes a subtask (successfully or not).
+   * The host uses this to write the output into the agent's chat tab.
+   */
+  onSubtaskComplete?: (client: ACPClient, subtask: Subtask, agentOutput: string) => void;
 }
 
 export interface AgentAssignment {
@@ -167,12 +191,7 @@ export async function orchestrate(config: OrchestrationConfig): Promise<Orchestr
   send({ type: "plan", ...plan });
 
   if (!autoApprove) {
-    // The workflow suspends here. The Tauri frontend will display the plan
-    // and send an "approve" message back via stdin. The host process resumes
-    // the workflow by calling resumeOrchestration().
-    //
-    // For now, we return a "pending_approval" result. The host index.ts
-    // will handle the approve/reject message and call executeApprovedPlan().
+    config.onPendingApproval?.({ assignments, context, cost, runId, runStart });
     return {
       status: "pending_approval",
       subtaskResults: [],
@@ -460,23 +479,23 @@ async function executeViaACP(
   cost: CostTracker,
 ): Promise<string> {
   const client = config.createACPClient!(agentId);
-  const zones = SharedZoneConfig.fromWorkspace(config.workspacePath);
-  const zonePatterns = [
-    `${subtask.region}/**`,
-    ...zones.getAllPatterns(),
-  ];
+
+  config.onSubtaskStart?.(client, subtask, agentId);
 
   try {
     await client.connect();
-    const session = await client.newSession(config.workspacePath);
+    await client.newSession(config.workspacePath);
 
-    // TODO: Stream output back via send() for real-time UI updates.
-    // For now we collect the full response.
     const response = await client.sendMessage(prompt);
 
     cost.record(agentId, 0, subtask.description, subtask.description, subtask.region);
 
-    return typeof response === "string" ? response : JSON.stringify(response);
+    const output = typeof response === "string" ? response : JSON.stringify(response);
+    config.onSubtaskComplete?.(client, subtask, output);
+    return output;
+  } catch (error) {
+    config.onSubtaskComplete?.(client, subtask, `Error: ${error instanceof Error ? error.message : String(error)}`);
+    throw error;
   } finally {
     try {
       client.dispose();
