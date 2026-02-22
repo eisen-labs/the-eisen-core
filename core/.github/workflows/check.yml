@@ -34,6 +34,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libglib2.0-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -45,24 +47,3 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
-  python:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-      - uses: astral-sh/setup-uv@v5
-      - name: Install deps and build bridge
-        working-directory: agent
-        run: |
-          uv sync --extra dev
-          uv pip install maturin
-          uv run maturin develop
-          # Build eisen-core binary so it's available for ACP session tests
-          cd .. && cargo build -p eisen-core
-      - name: Run tests
-        working-directory: agent
-        run: uv run pytest tests/ -v

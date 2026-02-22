@@ -418,7 +418,7 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
     instanceId: string | null,
     contextChips?: Array<{ filePath: string; fileName: string; isDirectory?: boolean }>,
   ) => void;
-  public onAddAgent?: (agentType?: string, sessionMode?: string) => void;
+  public onAddAgent?: (agentType?: string, sessionMode?: "single_agent" | "orchestrator") => void;
   public onSwitchAgent?: (instanceId: string) => void;
   public onModeChange?: (modeId: string) => void;
   public onModelChange?: (modelId: string) => void;
@@ -541,7 +541,10 @@ export class GraphViewProvider implements vscode.WebviewViewProvider {
         if (msg.query !== undefined) this.onFileSearch?.(msg.query);
         break;
       case "addAgent":
-        this.onAddAgent?.(msg.agentType as string | undefined, msg.sessionMode);
+        this.onAddAgent?.(
+          msg.agentType as string | undefined,
+          msg.sessionMode as "single_agent" | "orchestrator" | undefined,
+        );
         break;
       case "switchAgent":
         if (msg.instanceId) this.onSwitchAgent?.(msg.instanceId);

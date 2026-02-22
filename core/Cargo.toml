@@ -1,3 +1,3 @@
 [workspace]
-members = ["core", "pybridge", "app/src-tauri"]
+members = ["core", "crates/eisen-napi", "app/src-tauri"]
 resolver = "2"

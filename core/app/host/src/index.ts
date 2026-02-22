@@ -36,6 +36,17 @@ import { getAgent, getAgentsWithStatus, ensureAgentStatusLoaded } from "./acp/ag
 import { ACPClient, type ContextChipData } from "./acp/client";
 import { EisenOrchestrator, AGENT_COLORS } from "./orchestrator";
 import { FileSearchService } from "./file-search-service";
+import {
+  orchestrate,
+  executeAndEvaluate,
+  createAgents,
+  CostTracker,
+  type OrchestrationConfig,
+  type AgentAssignment,
+  type WorkspaceContext,
+  type OrchestrationOutput,
+  type OrchestratorAgents,
+} from "./workflow";
 
 marked.setOptions({ breaks: true, gfm: true });
 
@@ -873,6 +884,92 @@ async function restoreSavedModeAndModel(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Orchestration workflow (Mastra-based, replaces OrchestratorBridge)
+// ---------------------------------------------------------------------------
+
+/** Pending orchestration run — stored while awaiting user approval. */
+let pendingOrchestration: {
+  config: OrchestrationConfig;
+  assignments: AgentAssignment[];
+  context: WorkspaceContext;
+  cost: CostTracker;
+  runId: string;
+  runStart: number;
+} | null = null;
+
+/** Lazily-created orchestrator agents (shared across runs). */
+let orchestratorAgents: OrchestratorAgents | null = null;
+
+function getOrchestratorAgents(): OrchestratorAgents {
+  if (!orchestratorAgents) {
+    // Default model — can be overridden per-workspace via config
+    const model = process.env.EISEN_ORCHESTRATOR_MODEL ?? "anthropic/claude-sonnet-4-20250514";
+    orchestratorAgents = createAgents({ model });
+  }
+  return orchestratorAgents;
+}
+
+async function handleOrchestrate(
+  intent: string,
+  effort: string = "medium",
+  autoApprove: boolean = false,
+): Promise<void> {
+  try {
+    const config: OrchestrationConfig = {
+      workspacePath: getCwd(),
+      userIntent: intent,
+      effort: effort as "low" | "medium" | "high",
+      autoApprove,
+      maxAgents: MAX_AGENT_INSTANCES,
+      agents: getOrchestratorAgents(),
+      send,
+    };
+
+    const result = await orchestrate(config);
+
+    if (result.status === "pending_approval") {
+      // Store the pending state for the approve handler.
+      // The actual assignments and context were already sent to the UI
+      // via send() inside orchestrate(). We need to store them so we
+      // can resume when the user approves.
+      //
+      // NOTE: In the current architecture, orchestrate() returns early
+      // for pending_approval before building the assignments list.
+      // The full approve/resume cycle will be implemented in a follow-up
+      // once the Tauri frontend sends approve messages.
+      console.error("[eisen-host] Orchestration awaiting user approval");
+    }
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error("[eisen-host] Orchestration error:", msg);
+    send({ type: "orchestrationError", message: msg });
+  }
+}
+
+async function handleOrchestrationApprove(approved: boolean): Promise<void> {
+  if (!pendingOrchestration) {
+    send({ type: "error", text: "No pending orchestration to approve" });
+    return;
+  }
+
+  if (!approved) {
+    send({ type: "state", state: "cancelled" });
+    pendingOrchestration = null;
+    return;
+  }
+
+  const { config, assignments, context, cost, runId, runStart } = pendingOrchestration;
+  pendingOrchestration = null;
+
+  try {
+    await executeAndEvaluate(config, assignments, context, cost, runId, runStart);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    send({ type: "orchestrationError", message: msg });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main stdin/stdout IPC loop
 // ---------------------------------------------------------------------------
 
@@ -936,6 +1033,23 @@ async function handleMessage(message: Record<string, any>): Promise<void> {
         // Forward to frontend for clipboard access
         send({ type: "copyToClipboard", text: message.text });
       }
+      break;
+    // Orchestration commands (Mastra workflow)
+    case "orchestrate":
+      if (message.intent) {
+        await handleOrchestrate(
+          message.intent,
+          message.effort,
+          message.autoApprove,
+        );
+      }
+      break;
+    case "approve":
+      await handleOrchestrationApprove(message.approved !== false);
+      break;
+    case "retry":
+      // TODO: Implement retry of failed subtasks from last run
+      send({ type: "error", text: "Retry not yet implemented" });
       break;
     case "ready": {
       // Send current connection state

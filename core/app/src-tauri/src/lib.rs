@@ -21,7 +21,11 @@ fn get_launch_cwd() -> Option<String> {
 }
 
 #[tauri::command]
-fn spawn_host(cwd: String, state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> Result<(), String> {
+fn spawn_host(
+    cwd: String,
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     let mut guard = state.host.lock().map_err(|e| e.to_string())?;
     if guard.is_some() {
         return Err("Host already running".into());
@@ -75,7 +79,10 @@ fn spawn_host(cwd: String, state: tauri::State<'_, AppState>, app: tauri::AppHan
         }
     });
 
-    *guard = Some(HostProcess { stdin, _child: child });
+    *guard = Some(HostProcess {
+        stdin,
+        _child: child,
+    });
     Ok(())
 }
 
@@ -95,7 +102,13 @@ fn find_host_binary() -> Result<std::path::PathBuf, String> {
 
     let candidates = [
         exe_dir.join("..").join("..").join("bin").join(&name),
-        exe_dir.join("..").join("..").join("app").join("src-tauri").join("bin").join(&name),
+        exe_dir
+            .join("..")
+            .join("..")
+            .join("app")
+            .join("src-tauri")
+            .join("bin")
+            .join(&name),
     ];
 
     for path in &candidates {
@@ -156,7 +169,11 @@ pub fn run() {
         .manage(AppState {
             host: Mutex::new(None),
         })
-        .invoke_handler(tauri::generate_handler![get_launch_cwd, spawn_host, send_to_host])
+        .invoke_handler(tauri::generate_handler![
+            get_launch_cwd,
+            spawn_host,
+            send_to_host
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

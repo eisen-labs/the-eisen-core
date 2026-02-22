@@ -94,14 +94,8 @@ pub async fn handle_client(
 
     // Send initial snapshot
     {
-        let snap = resolve_snapshot(
-            &tracker,
-            &registry,
-            &orchestrator,
-            None,
-            &StreamFilter::All,
-        )
-        .await;
+        let snap =
+            resolve_snapshot(&tracker, &registry, &orchestrator, None, &StreamFilter::All).await;
         debug!(
             node_count = snap.nodes.len(),
             seq = snap.seq,
@@ -165,14 +159,8 @@ pub async fn handle_client(
                     // Client was too slow — send a fresh snapshot to resync
                     debug!(lagged = count, "client lagged, sending fresh snapshot");
                     let filter = filter_for_deltas.lock().await.clone();
-                    let snap = resolve_snapshot(
-                        &tracker,
-                        &registry,
-                        &orchestrator,
-                        None,
-                        &filter,
-                    )
-                    .await;
+                    let snap =
+                        resolve_snapshot(&tracker, &registry, &orchestrator, None, &filter).await;
                     let json = match serde_json::to_string(&snap) {
                         Ok(j) => j + "\n",
                         Err(_) => break,
@@ -236,16 +224,19 @@ pub async fn handle_client(
                                 *filter_for_requests.lock().await = next;
                             }
                             ClientMessage::Rpc { id, method, params } => {
-                                debug!(msg_type = "rpc", method = method.as_str(), "received client message");
-                                let response =
-                                    handle_rpc_request(
-                                        id,
-                                        method,
-                                        params,
-                                        &registry_for_reader,
-                                        &tracker_for_reader,
-                                    )
-                                        .await;
+                                debug!(
+                                    msg_type = "rpc",
+                                    method = method.as_str(),
+                                    "received client message"
+                                );
+                                let response = handle_rpc_request(
+                                    id,
+                                    method,
+                                    params,
+                                    &registry_for_reader,
+                                    &tracker_for_reader,
+                                )
+                                .await;
                                 let json = match serde_json::to_string(&response) {
                                     Ok(j) => j + "\n",
                                     Err(_) => break,
@@ -326,9 +317,7 @@ async fn resolve_snapshot(
             }
         }
 
-        let state = target
-            .as_ref()
-            .and_then(|key| reg.get_session_state(key));
+        let state = target.as_ref().and_then(|key| reg.get_session_state(key));
 
         (target, state)
     };
@@ -396,15 +385,19 @@ async fn handle_rpc_request(
     match method.as_str() {
         "list_sessions" => {
             let parsed = match params {
-                Some(value) => serde_json::from_value::<ListSessionsParams>(value)
-                    .map_err(|e| e.to_string()),
+                Some(value) => {
+                    serde_json::from_value::<ListSessionsParams>(value).map_err(|e| e.to_string())
+                }
                 None => Ok(ListSessionsParams::default()),
             };
             let params = match parsed {
                 Ok(p) => p,
                 Err(err) => return RpcResponse::error(id, 400, err),
             };
-            let sessions = registry.lock().await.list_sessions(params.agent_id.as_deref());
+            let sessions = registry
+                .lock()
+                .await
+                .list_sessions(params.agent_id.as_deref());
             match serde_json::to_value(sessions) {
                 Ok(value) => RpcResponse::result(id, value),
                 Err(err) => RpcResponse::error(id, 500, err.to_string()),
@@ -412,8 +405,9 @@ async fn handle_rpc_request(
         }
         "create_session" => {
             let parsed = match params {
-                Some(value) => serde_json::from_value::<CreateSessionParams>(value)
-                    .map_err(|e| e.to_string()),
+                Some(value) => {
+                    serde_json::from_value::<CreateSessionParams>(value).map_err(|e| e.to_string())
+                }
                 None => Err("missing params".to_string()),
             };
             let params = match parsed {
@@ -446,8 +440,9 @@ async fn handle_rpc_request(
         }
         "close_session" => {
             let parsed = match params {
-                Some(value) => serde_json::from_value::<SessionKeyParams>(value)
-                    .map_err(|e| e.to_string()),
+                Some(value) => {
+                    serde_json::from_value::<SessionKeyParams>(value).map_err(|e| e.to_string())
+                }
                 None => Err("missing params".to_string()),
             };
             let params = match parsed {
@@ -462,8 +457,9 @@ async fn handle_rpc_request(
         }
         "set_active_session" => {
             let parsed = match params {
-                Some(value) => serde_json::from_value::<SessionKeyParams>(value)
-                    .map_err(|e| e.to_string()),
+                Some(value) => {
+                    serde_json::from_value::<SessionKeyParams>(value).map_err(|e| e.to_string())
+                }
                 None => Err("missing params".to_string()),
             };
             let params = match parsed {
@@ -516,8 +512,9 @@ async fn handle_rpc_request(
         }
         "get_session_state" => {
             let parsed = match params {
-                Some(value) => serde_json::from_value::<SessionKeyParams>(value)
-                    .map_err(|e| e.to_string()),
+                Some(value) => {
+                    serde_json::from_value::<SessionKeyParams>(value).map_err(|e| e.to_string())
+                }
                 None => Err("missing params".to_string()),
             };
             let params = match parsed {
@@ -545,11 +542,7 @@ async fn handle_rpc_request(
                 Err(err) => return RpcResponse::error(id, 400, err),
             };
             let key = SessionKey::new(&params.agent_id, &params.session_id);
-            match registry
-                .lock()
-                .await
-                .add_context_items(&key, params.items)
-            {
+            match registry.lock().await.add_context_items(&key, params.items) {
                 Ok(Some(session)) => match serde_json::to_value(session) {
                     Ok(value) => RpcResponse::result(id, value),
                     Err(err) => RpcResponse::error(id, 500, err.to_string()),
@@ -585,8 +578,7 @@ mod tests {
 
     /// Helper: start a TCP server on an ephemeral port, return the port
     /// and broadcast sender.
-    async fn start_test_server(
-    ) -> (
+    async fn start_test_server() -> (
         u16,
         broadcast::Sender<WireLine>,
         Arc<Mutex<ContextTracker>>,
@@ -623,7 +615,14 @@ mod tests {
             }
         });
 
-        (port, delta_tx, tracker, registry, orchestrator, registry_dir)
+        (
+            port,
+            delta_tx,
+            tracker,
+            registry,
+            orchestrator,
+            registry_dir,
+        )
     }
 
     /// Read one ndJSON line from a stream.

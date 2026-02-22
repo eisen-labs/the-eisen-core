@@ -140,7 +140,7 @@ impl SessionRegistry {
         let mut sessions: Vec<SessionSummary> = self
             .sessions
             .values()
-            .filter(|session| agent_id.map_or(true, |a| a == session.agent_id))
+            .filter(|session| agent_id.is_none_or(|a| a == session.agent_id))
             .map(|session| SessionSummary {
                 agent_id: session.agent_id.clone(),
                 session_id: session.session_id.clone(),
@@ -158,6 +158,7 @@ impl SessionRegistry {
         sessions
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn create_session(
         &mut self,
         agent_id: String,

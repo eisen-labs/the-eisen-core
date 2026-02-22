@@ -16,22 +16,30 @@ jobs:
           - os: ubuntu-latest
             target: linux-x64
             binary: eisen-core
+            napi-target: x86_64-unknown-linux-gnu
+            napi-node: eisen-napi.linux-x64-gnu.node
             pkg-name: context-eisen
             display-name: Eisen
           - os: macos-latest
             target: darwin-arm64
             binary: eisen-core
+            napi-target: aarch64-apple-darwin
+            napi-node: eisen-napi.darwin-arm64.node
             pkg-name: context-eisen-arm
             display-name: Eisen (arm)
           - os: macos-latest
             target: darwin-x64
             binary: eisen-core
             rust-target: x86_64-apple-darwin
+            napi-target: x86_64-apple-darwin
+            napi-node: eisen-napi.darwin-x64.node
             pkg-name: context-eisen-x64
             display-name: Eisen (x64)
           - os: windows-latest
             target: win32-x64
             binary: eisen-core.exe
+            napi-target: x86_64-pc-windows-msvc
+            napi-node: eisen-napi.win32-x64-msvc.node
             pkg-name: context-eisen-win
             display-name: Eisen (win)
 
@@ -55,6 +63,10 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           version: 9
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
 
       - name: Set extension version and name from tag
         shell: bash
@@ -80,16 +92,26 @@ jobs:
       - name: Build Rust binary
         run: cargo build --release --manifest-path core/Cargo.toml ${{ matrix.rust-target && format('--target {0}', matrix.rust-target) || '' }}
 
-      - name: Copy binary into extension
+      - name: Build NAPI-RS native module
+        shell: bash
+        working-directory: crates/eisen-napi
+        run: |
+          bun install
+          bunx napi build --platform --release --target ${{ matrix.napi-target }}
+
+      - name: Copy binary and NAPI module into extension
         shell: bash
         run: |
-          mkdir -p extension/bin
+          mkdir -p extension/bin extension/napi
           if [ -n "${{ matrix.rust-target }}" ]; then
             cp "core/target/${{ matrix.rust-target }}/release/${{ matrix.binary }}" "extension/bin/${{ matrix.binary }}"
           else
             cp "core/target/release/${{ matrix.binary }}" "extension/bin/${{ matrix.binary }}"
           fi
           chmod +x "extension/bin/${{ matrix.binary }}" 2>/dev/null || true
+          cp "crates/eisen-napi/${{ matrix.napi-node }}" extension/napi/
+          cp crates/eisen-napi/index.js extension/napi/
+          cp crates/eisen-napi/index.d.ts extension/napi/
 
       - name: Build UI
         shell: bash

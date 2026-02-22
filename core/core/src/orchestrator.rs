@@ -30,10 +30,7 @@ impl OrchestratorAggregator {
     ) -> Snapshot {
         let key = session.key();
         let nodes = compute_aggregate_nodes(&session.providers, tracker);
-        let state = self
-            .sessions
-            .entry(key)
-            .or_insert_with(OrchestratorSessionState::default);
+        let state = self.sessions.entry(key).or_default();
 
         if nodes_changed(&state.nodes, &nodes) {
             state.seq += 1;
@@ -60,10 +57,7 @@ impl OrchestratorAggregator {
             active_keys.push(key.clone());
 
             let nodes = compute_aggregate_nodes(&session.providers, tracker);
-            let state = self
-                .sessions
-                .entry(key.clone())
-                .or_insert_with(OrchestratorSessionState::default);
+            let state = self.sessions.entry(key.clone()).or_default();
 
             let (updates, removed) = diff_nodes(&state.nodes, &nodes);
             if !updates.is_empty() || !removed.is_empty() {
@@ -110,10 +104,7 @@ impl OrchestratorAggregator {
                 if !session.providers.contains(&provider_key) {
                     continue;
                 }
-                let state = self
-                    .sessions
-                    .entry(session.key())
-                    .or_insert_with(OrchestratorSessionState::default);
+                let state = self.sessions.entry(session.key()).or_default();
                 state
                     .provider_usage
                     .insert(provider_key.clone(), usage.clone());

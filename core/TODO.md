@@ -1,300 +1,207 @@
-# Future Topics — Brainstorming
+# TODO — Mastra Migration & Workspace Learning
 
-> Living document for future Eisen features. Each topic includes a concept overview,
-> mapping to the current architecture, ACP protocol alignment, implementation sketch,
-> open questions, and a feasibility rating.
+> Actionable task checklist for migrating from DSPy (Python) to Mastra
+> (TypeScript) with per-workspace LibSQL. See `MASTRA.md` for the full
+> architectural plan and `HYBRID_MASTRA_DSPY.md` for the optional offline
+> DSPy optimizer.
 
----
+## Legend
 
-## Table of Contents
-
-1. [Hot Zones — Context Re-freshening](#1-hot-zones--context-re-freshening)
-2. [Agent Overlap — Cross-Agent Context Handoff](#2-agent-overlap--cross-agent-context-handoff)
-3. [Blocker Zones — Bounded Agent Directories](#3-blocker-zones--bounded-agent-directories)
-4. [Dependency Graph Between Topics](#4-dependency-graph-between-topics)
-5. [ACP Protocol Reference Notes](#5-acp-protocol-reference-notes)
+- `[ ]` Not started
+- `[~]` In progress
+- `[x]` Complete
 
 ---
 
-## 1. Hot Zones — Context Re-freshening
+## Phase 0: NAPI-RS Bridge
 
-**Feasibility: HIGH**
+Replace the PyO3 bridge with a NAPI-RS `.node` addon. Bun supports Node-API
+natively and explicitly recommends it as the stable path for native interop
+(over `bun:ffi`, which is experimental with known bugs). The `.node` addon
+loads in-process — no spawning, no JSON-over-stdio boundary.
 
-### Concept
-
-Certain files are critical to a task — entry points, shared types, config — but agents
-drop them from context after a few turns of inactivity. A "hot zone" is a set of files
-that get **re-injected into the agent's context** when compaction is detected or the
-files decay out. The agent never "forgets" what matters most.
-
-### Architecture Alignment
-
-Eisen already has all the detection primitives:
-
-| Component                                  | Role in hot zones                          |
-| ------------------------------------------ | ------------------------------------------ |
-| `FileNode.heat` (decays at 0.95/100ms)     | Detects when a file is cooling off         |
-| `FileNode.in_context` (3-turn window)      | Detects when a file exits inferred context |
-| Compaction detection (`tracker.rs:94-108`) | Fires on >50% token usage drop             |
-| `ContentBlock::Resource` in ACP prompts    | Vehicle for re-injecting file content      |
-
-**Missing**: a hot zone registry, a re-injection trigger, and proxy interception — the
-proxy is currently transparent (read-only). Injecting `Resource` blocks into
-`session/prompt` requires it to become an active interceptor on the upstream path.
-
-### Implementation Sketch
-
-```
-Phase A — Registry
-  Add hot_zones: HashSet<String> to ContextTracker
-  TCP command: { type: "set_hotzone", paths: [...] }
-  Extension UI: right-click graph node → "Pin to hot zone"
-  (or auto-detect: files accessed in >60% of turns)
-
-Phase B — Trigger
-  On compaction: collect hot zone files not in_context, queue for re-injection
-  On end_turn when a hot zone file's in_context flips false: queue it
-  Debounce: skip re-injection if the file was injected within N turns
-
-Phase C — Proxy Interception
-  In upstream_task, after parsing session/prompt:
-    deserialize JSON-RPC params → append ContentBlock::Resource for queued files
-    re-serialize and forward the modified message
-  Log injections as Action::Refreshed
-```
-
-### ACP Alignment
-
-- Appending `Resource` blocks to `session/prompt` is fully compliant — no extensions.
-- Gate on `InitializeResponse.capabilities.promptCapabilities.embeddedContext`.
-- No protocol changes needed. This is pure message augmentation.
-
-### Open Questions
-
-- Silent injection vs. user-visible indicator ("Re-injected 3 files")?
-- Token budget: size cap per file (32KB?) and total budget with prioritization.
-- Auto-detection heuristic: access frequency alone may not suffice — writes
-  might matter more than reads.
-- Should hot zones persist across sessions or reset per session?
+- [x] Create `crates/eisen-napi/` crate with `napi` + `napi-derive` dependencies
+- [x] Expose `parseWorkspace`, `parseFile`, `lookupSymbol`, `snapshot` as `#[napi]` fns
+- [x] Add `@napi-rs/cli` as a dev dependency and configure build scripts
+- [x] Write TypeScript wrapper at `extension/src/napi/eisen.ts`
+- [x] Verify JSON output is identical to PyO3 bridge output for all four functions
+- [x] Add integration tests for all four NAPI-RS exports (18 tests, `bun test`)
+- [x] Set up GitHub Actions matrix for multi-platform `.node` builds
+  - `linux-x64-gnu`, `darwin-arm64`, `darwin-x64`, `win32-x64-msvc`
+- [x] Confirm `.node` binary is correctly bundled into the VS Code VSIX
+- [x] Document NAPI-RS setup in `crates/eisen-napi/README.md`
 
 ---
 
-## 2. Agent Overlap — Cross-Agent Context Handoff
+## Phase 1: LibSQL Per-Workspace Database
 
-**Feasibility: MEDIUM-LOW (stretch goal)**
+Create `.eisen/workspace.db` in each workspace root. Zero external services.
 
-### Concept
-
-When two concurrent agents overlap on the graph (touching the same files), the first
-agent has already built context about those files. Instead of the second agent re-reading
-from scratch, the first **hands off accumulated context** — summaries, extracted facts,
-inferred relationships — so the second agent skips redundant work.
-
-### Architecture Alignment
-
-Eisen is currently **single-agent** (one `ACPClient` → one `eisen-core` → one agent).
-Multi-agent is a Phase 4 goal with no implementation yet.
-
-| Exists                                       | Relevance                                               |
-| -------------------------------------------- | ------------------------------------------------------- |
-| `ContextTracker` per session                 | Each agent gets its own tracker instance                |
-| TCP broadcast (ndJSON)                       | Coordination service can subscribe to multiple trackers |
-| Graph with per-node metadata                 | Extend with `ownerAgent` field                          |
-| `session/update` with `ToolCall.locations[]` | Reveals exactly which files each agent touches          |
-
-**Missing**: multi-agent spawning (N `ACPClient` instances), overlap detection service,
-handoff message format (ACP has no built-in "context from another agent" type), and
-agent willingness to trust external context.
-
-### Implementation Sketch
-
-```
-Phase A — Multi-Agent Infrastructure
-  Extend agents.ts: spawn multiple agents, each with own proxy + TCP port
-  GraphViewProvider subscribes to all TCP streams, tags nodes with agent_id
-  Graph renders agent-colored overlays (Agent A = blue, Agent B = orange)
-
-Phase B — Overlap Detection
-  Maintain Map<FilePath, Set<AgentId>> from merged tracker state
-  On delta: update map → when file appears in 2+ active sets:
-    emit OverlapEvent { file, agents, first_accessor }
-  Graph highlights shared nodes with a ring
-
-Phase C — Context Handoff
-  On overlap: query first accessor's session history
-    (ACP distributed sessions: GET /sessions/{id} → history URLs)
-  Extract relevant content blocks, inject into second agent's prompt as
-    ContentBlock::Resource with annotation: { source: "agent-handoff" }
-  Second agent gets pre-digested context instead of raw file
-```
-
-### ACP Alignment
-
-- **Distributed sessions** return history as URL references — fetchable by the
-  coordination layer for cross-agent context sharing.
-- **Router pattern** is documented ACP architecture. Eisen could act as
-  coordinator routing context between specialist agents.
-- **`metadata.annotations`** is open-schema — handoff provenance fits without
-  protocol extensions.
-- **Limitation**: ACP composition uses REST (`/runs`). Eisen agents use stdio
-  JSON-RPC. Bridging these two transport modes is a significant challenge.
-
-### Open Questions
-
-- How does the receiving agent _trust_ handed-off context? May re-read anyway.
-- Handoff granularity: full file, diffs, summaries, or extracted symbols?
-- Latency: overlap detection + context assembly may be slower than just re-reading.
-- Better as a _user suggestion_ ("Agent B is about to re-read files Agent A
-  processed — merge sessions?") rather than automatic?
+- [x] Add `@libsql/client` dependency to `extension/` (using raw client, `@mastra/libsql` deferred to Phase 2)
+- [x] Create `extension/src/db/` module with schema init and connection management
+- [x] Implement schema auto-migration on version bump
+- [x] `workspace_snapshots` table — tree_hash based staleness detection
+- [x] `file_meta` table — mtime tracking per file
+- [x] `git_patterns` table — initial load (last 200 commits) and incremental updates
+- [x] `file_cochange` table — derive from `git_patterns`, upsert on new commits
+- [x] `task_history` table — write after each orchestration run with quality score
+- [x] `agent_performance` table — rolling success/token averages per agent/region/language
+- [x] `region_insights` table — LLM-generated region summaries, refresh trigger on file changes
+- [x] `symbol_cache` table — mtime-based cache for `lookup-symbol` CLI results
+- [x] Auto-create `.eisen/workspace.db` on first orchestration run
+- [x] Implement staleness refresh strategy (mtime sampling, tree_hash comparison)
+- [x] Add DB vacuum/cleanup for long-lived workspaces
 
 ---
 
-## 3. Blocker Zones — Bounded Agent Directories
+## Phase 2: Mastra Workflow
 
-**Feasibility: MEDIUM**
+Replace `OrchestratorBridge` + Python process with a Mastra workflow running
+directly in the eisen-host Bun process (`app/host/`).
 
-### Concept
+**Dependencies**
+- [x] Bun is the runtime for `app/host/` (compiles to standalone binary)
+- [x] Add `@mastra/core` v1.5.0 to `app/host/` (`bun add @mastra/core`)
+- [x] Add `ai` v6.x (Vercel AI SDK) to `app/host/` (`bun add ai`)
+- [x] Add `zod` v4.x to `app/host/` (`bun add zod`)
 
-Restrict an agent's file access to a defined directory subtree. The agent cannot read,
-write, or search outside its zone. This enables **expert agents** (authority over
-`src/api/`), **safety boundaries** (no touching secrets/configs), and **A2A routing**
-(out-of-zone requests routed to the zone's owner agent).
+**Port DSPy signatures to Zod schemas + Mastra agents**
+- [x] `TaskDecompose` → `DecomposeOutputSchema` + Mastra agent (`app/host/src/workflow/schemas.ts`, `agents.ts`)
+- [x] `AgentSelect` → `AgentSelectOutputSchema` + Mastra agent
+- [x] `PromptBuild` → `PromptBuildOutputSchema` + Mastra agent
+- [x] `ProgressEval` → `ProgressEvalOutputSchema` + Mastra agent
 
-### Architecture Alignment
+**Workflow steps**
+- [x] `loadWorkspaceContext` — query LibSQL for context, call NAPI-RS `parseWorkspace` if stale (`context-loader.ts`)
+- [x] `decomposeTask` — LLM structured output with workspace context injected (`orchestrate.ts`)
+- [x] `assignAgents` — query `agent_performance` first, fall back to LLM (`orchestrate.ts`)
+- [x] `confirmPlan` — IPC suspend/resume for user approval (sends `plan` event, awaits `approve` message)
+- [x] `buildAndExecute` — topological batch execution via existing `ACPClient` (`orchestrate.ts`)
+- [x] `evaluateAndRecord` — evaluate each subtask, write results to LibSQL (`orchestrate.ts`)
 
-The proxy already sees every file access via `extract.rs`:
+**Wiring**
+- [x] Wire workflow into host `orchestrate` / `approve` / `retry` / `cancel` IPC commands (`app/host/src/index.ts`)
+- [~] Remove `OrchestratorBridge` and `acp/orchestrator-bridge.ts` (kept for reference; not used by new workflow)
+- [x] Port topological sort (`_build_execution_batches`) to TypeScript (`topo-sort.ts`)
+- [~] Port A2A router to TypeScript (deferred — zone enforcement covers most cases)
+- [ ] Port conflict detection and resolution to TypeScript (deferred — last-write-wins per MASTRA.md Open Questions)
+- [x] Port zone enforcement to TypeScript (`zones.ts`)
+- [x] Port cost tracking to TypeScript (`cost-tracker.ts`)
 
-| ACP method                    | Captures                           |
-| ----------------------------- | ---------------------------------- |
-| `fs/read_text_file`           | `params.path`                      |
-| `fs/write_text_file`          | `params.path`                      |
-| `session/update` (tool calls) | `ToolCall.locations[]`             |
-| Search result extraction      | Parsed paths from grep/glob output |
-
-Enforcement = intercept these and **block/error** when the path is out-of-zone.
-
-**Missing**: zone config format, proxy enforcement (transparent → gatekeeper),
-graceful denial UX (agents may retry or hallucinate on permission errors),
-cross-zone routing (requires multi-agent from Topic #2).
-
-### Implementation Sketch
-
-```
-Phase A — Zone Configuration
-  BlockerZone { agent_id, allowed: Vec<Glob>, denied: Vec<Glob> }
-  CLI: eisen-core observe --zone "src/api/**" -- opencode acp
-  Extension UI: select folder nodes on graph to define boundaries
-  TCP command: { type: "set_zone", allowed: [...], denied: [...] }
-
-Phase B — Proxy Enforcement
-  In extract_downstream, before forwarding fs/read or fs/write:
-    check path against zone config
-    if out-of-zone: return JSON-RPC error to agent
-      { id, error: { code: -32001, message: "Outside agent zone" } }
-  For tool call locations[]: filter or block out-of-zone entries
-  For search results: redact out-of-zone paths
-  Log blocked accesses as Action::Blocked
-
-Phase C — Cross-Zone A2A Routing (depends on Topic #2)
-  On out-of-zone request: identify owning agent
-  Route via ACP composition: POST /runs on owner's server
-  Return response as ContentBlock to requester
-  Graph: render cross-zone requests as directed edges between agents
-```
-
-### ACP Alignment
-
-- **JSON-RPC errors** are standard — custom code `-32001` for zone violations.
-- **Router pattern** fits cross-zone routing: coordinator detects out-of-zone
-  request, creates a `run` on the target agent.
-- **Agent manifest** can declare zones via `metadata.annotations`:
-  `{ "eisen.zone.allowed": ["src/api/**"], "eisen.zone.denied": ["**/.env"] }`
-- **Limitation**: `fs/*` methods are Agent Client Protocol (stdio), not
-  ACP-over-REST. Proxy blocking works, but cross-zone routing requires bridging.
-
-### Open Questions
-
-- How do agents react to access denials? Test each (OpenCode, Claude Code,
-  Codex, Gemini, Goose, Amp, Aider) for graceful degradation.
-- Hard boundaries (error) vs. soft boundaries (warn + log, allow access)?
-- Shared files (e.g., `package.json`): allow a "shared zone" for all agents?
-- Zone granularity: directory, file, or symbol level?
-- Auto-suggest zones from directory structure or CODEOWNERS?
+**Tests**
+- [x] 33 workflow unit tests pass (`app/host/__tests__/workflow.test.ts`)
+- [x] 23 DB tests still pass (`app/host/__tests__/db.test.ts`)
+- [x] TypeScript compiles clean (`bunx tsc --noEmit`)
 
 ---
 
-## 4. Dependency Graph Between Topics
+## Phase 3: Git Integration
 
-```
-┌─────────────────────┐
-│   1. HOT ZONES      │  ◄── Standalone. Introduces proxy interception.
-│   (HIGH feasibility)│
-└────────┬────────────┘
-         │  interception pattern reused
-         ▼
-┌─────────────────────┐
-│  3. BLOCKER ZONES   │  ◄── Phases A-B standalone.
-│  (MEDIUM)           │      Phase C depends on #2.
-└────────┬────────────┘
-         │  cross-zone routing needs multi-agent
-         ▼
-┌─────────────────────┐
-│  2. AGENT OVERLAP   │  ◄── Most ambitious. Requires multi-agent (Phase 4).
-│  (MEDIUM-LOW)       │      Builds on #1 and #3.
-└─────────────────────┘
-```
+Mine git history for workspace structure knowledge — zero LLM tokens.
 
-**Recommended order:**
+**Git parsing and sync**
+- [x] Parse `git log` on first run (last 200 commits) into `git_patterns` (`app/host/src/git/parser.ts`)
+- [x] Incremental `git log --since=<timestamp>` on subsequent runs (`syncGitPatterns()` in `context-loader.ts`)
+- [x] Derive `file_cochange` relationships from co-occurring files per commit (`db.deriveCochangeFromPatterns()`)
 
-1. **Hot Zones** — immediate value, establishes proxy interception.
-2. **Blocker Zones A-B** — enforcement using the same interception, no multi-agent needed.
-3. **Agent Overlap + Blocker Zones C** — requires Phase 4 multi-agent infrastructure.
+**Integration into workflow**
+- [x] Query `file_cochange` during `loadWorkspaceContext` to enrich context (`context-loader.ts`)
+- [x] Extract file-like tokens from user intent for co-change seeding (`extractFilesFromIntent()`)
+
+**Region insights (background, LLM-powered)**
+- [x] Trigger background `region_insights` generation after orchestration runs (`orchestrate.ts`)
+- [x] Refresh `region_insights` when >20% of region files changed since last update (`region-insights.ts`)
+- [x] Agent-generated descriptions, conventions, and dependencies stored in `region_insights` table
+
+**New files**
+- `app/host/src/git/parser.ts` — `git log` parser and spawn helper
+- `app/host/src/git/index.ts` — barrel exports
+- `app/host/src/workflow/region-insights.ts` — background insight generator
+- `app/host/__tests__/git.test.ts` — 17 unit tests for git sync
+
+**Tests**: 73 total tests pass (23 DB + 33 workflow + 17 git)
 
 ---
 
-## 5. ACP Protocol Reference Notes
+## Phase 4: Cleanup
 
-### Message Injection (Hot Zones)
+Remove the Python runtime layer. The DSPy optimizer (`dspy/`) is kept as a
+reference implementation for the hybrid optimizer (see `HYBRID_MASTRA_DSPY.md`).
 
-```
-session/prompt → params.content[] → ContentBlock::Resource
-  { "type": "resource", "resource": { "uri": "file:///path", "text": "..." } }
+- [ ] Remove `dspy/` directory (Python orchestrator) [DEFERRED — kept for hybrid optimizer reference]
+- [x] Remove `pybridge/` directory (PyO3 bridge — superseded by NAPI-RS)
+- [x] Remove `pybridge` from `Cargo.toml` workspace members
+- [x] Remove Maturin build config and `pyproject.toml` (none at repo root — N/A)
+- [x] Remove Python CI job from `check.yml` (`agent/` dir no longer exists)
+- [x] Update `extension/package.json` scripts (no bridge-related scripts — N/A)
+- [x] Update `README.md` — no Python setup instructions present — N/A
 
-Gate: InitializeResponse.capabilities.promptCapabilities.embeddedContext
-```
+---
 
-### Distributed Sessions (Agent Overlap)
+## Stretch: Hybrid DSPy Optimizer [DEFERRED]
 
-```
-GET /sessions/{session_id} → { id, history: [url, ...], state: url }
-History entries are HTTP URLs to message content on resource servers.
-Cross-agent sharing = fetching another agent's history URLs.
-```
+Optional offline optimizer that reads `task_history` from LibSQL and writes
+improved prompts back. See `HYBRID_MASTRA_DSPY.md` for full design.
 
-### Agent Manifest Metadata (Blocker Zones)
+> **Status:** Deferred. Will be implemented after Mastra core is stable.
+> The legacy Python orchestrator remains available in `dspy/` for reference.
 
-```json
-{
-  "name": "api-expert",
-  "metadata": {
-    "capabilities": [{ "name": "zone-expert", "description": "src/api/**" }],
-    "domains": ["api-layer"],
-    "annotations": {
-      "eisen.zone.allowed": ["src/api/**", "shared/types/**"],
-      "eisen.zone.denied": ["**/.env"]
-    }
-  }
-}
-```
+**Package setup**
+- [ ] Create `optimizer/` directory in repo root
+- [ ] Set up `optimizer/pyproject.toml` with `dspy>=2.5`, `libsql-client`
+- [ ] Create `optimizer/src/eisen_optimizer/` package structure
 
-### Composition Patterns (Cross-Zone Routing)
+**Core optimizer**
+- [ ] Implement LibSQL reader/writer (`db.py`) using Python `libsql-client`
+- [ ] Port `compile.py` → `optimizers/decompose.py` (BootstrapFewShot, default)
+- [ ] Port `agent_stats.py` → `optimizers/assign.py` (rule generation)
+- [ ] Add `optimizers/prompts.py` (PromptBuild optimization)
+- [ ] Add `optimizers/insights.py` (region insight generation)
+- [ ] Add `optimizers/profile.py` (workspace personality compilation)
+- [ ] Add MIPROv2 strategy to each optimizer (`--strategy mipro`, premium)
+- [ ] Improve quality metrics beyond the current non-empty check
 
-ACP supports **router** (route sub-tasks to specialists), **chaining** (sequential
-pipeline), and **parallelization** (concurrent independent tasks) — all via
-`POST /runs` with `agent_name`.
+**LibSQL schema additions for optimizer**
+- [ ] `optimized_prompts` table — few-shot examples + system instructions per step
+- [ ] `assignment_rules` table — learned agent assignment rules per region/language
+- [ ] `workspace_profile` table — tech stack, conventions, architecture summary
 
-### Protocol Boundary
+**VS Code integration**
+- [ ] Add "Optimize Workspace" command to extension command palette
+- [ ] Extension spawns `python -m eisen_optimizer --workspace <path>` on command
+- [ ] Show optimization progress and summary in extension UI
+- [ ] Mastra `loadWorkspaceContext` reads `optimized_prompts` and `assignment_rules`
+- [ ] Fall back gracefully to defaults when no optimized artifacts exist
 
-Eisen agents use **Agent Client Protocol** (stdio JSON-RPC) while ACP composition
-uses **REST**. Bridge options: wrap agents in a lightweight REST server, implement
-composition in the proxy/extension layer, or wait for dual-transport support.
+**Migration of existing data**
+- [ ] One-time migration: `~/.eisen/traces/*.json` → `task_history` table
+- [ ] One-time migration: `~/.eisen/agent_stats.json` → `agent_performance` table
+- [ ] One-time migration: `~/.eisen/compiled/*.json` → `optimized_prompts` table
+
+**Optimizer CLI**
+- [ ] `--dry-run` flag — show what would change without writing
+- [ ] `--reset` flag — revert optimized artifacts to defaults
+- [ ] `--target` flag — run a specific optimizer only
+- [ ] `--history` flag — show optimization run history and quality deltas
+
+---
+
+## Stretch: LibSQL Advanced Features
+
+- [ ] Semantic search on `task_history` using local embedding model (via Ollama)
+- [ ] Auto-suggest workspace conventions surfaced from `file_meta` + `git_patterns`
+- [ ] "Workspace personality" system prompt prefix derived from `workspace_profile`
+- [ ] User feedback loop — thumbs up/down on orchestrator suggestions → update quality scores
+- [ ] `eisen reset-db` command to clear workspace learnings
+- [ ] `eisen-core serve` mode — persistent process with Unix socket for low-latency symbol lookup
+- [ ] Export/import workspace learnings between machines
+
+---
+
+## Open Decisions
+
+- [ ] **Intent similarity:** Jaccard word overlap (current) vs. local embedding model
+- [ ] **ConflictResolver:** Port DSPy signature to Mastra agent, or simplify to last-write-wins
+- [ ] **`eisen-core serve` mode:** Implement now or defer until spawn latency is measured as a bottleneck
+- [ ] **Mastra Studio:** Include in dev workflow for debugging, or skip
+- [ ] **MIPROv2 paywall boundary:** Per-workspace license check, cloud validation, or honour system
