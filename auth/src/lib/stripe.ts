@@ -26,7 +26,7 @@ export function getStripe(): Stripe {
  * Stripe-Signature header.
  */
 export async function verifyWebhookEvent(
-  rawBody: string,
+  rawBody: string | Buffer,
   signature: string
 ): Promise<Stripe.Event> {
   if (!env.STRIPE_WEBHOOK_SECRET) {

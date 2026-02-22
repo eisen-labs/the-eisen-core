@@ -162,11 +162,11 @@ billing.post("/billing/webhook", async (c) => {
     return c.json({ error: "Missing Stripe-Signature header" }, 400);
   }
 
-  const rawBody = await c.req.text();
+  const rawBody = await c.req.arrayBuffer();
 
   let event: Stripe.Event;
   try {
-    event = await verifyWebhookEvent(rawBody, signature);
+    event = await verifyWebhookEvent(Buffer.from(rawBody), signature);
   } catch (err) {
     console.error("Webhook signature verification failed:", err);
     return c.json({ error: "Invalid signature" }, 400);
@@ -248,13 +248,12 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
          stripe_subscription_id = $3,
          current_period_end = ${periodEnd ? "to_timestamp($4)" : "NULL"},
          updated_at = now()
-     WHERE user_id = $5`,
+     WHERE user_id = ${periodEnd ? "$5" : "$4"}`,
     [
       tier,
       session.customer as string,
       subscriptionId,
-      periodEnd,
-      userId,
+      ...(periodEnd ? [periodEnd, userId] : [userId]),
     ]
   );
 
@@ -368,13 +367,12 @@ async function syncSubscription(userId: string, subscription: Stripe.Subscriptio
          stripe_subscription_id = $3,
          current_period_end = ${periodEnd ? "to_timestamp($4)" : "NULL"},
          updated_at = now()
-     WHERE user_id = $5`,
+     WHERE user_id = ${periodEnd ? "$5" : "$4"}`,
     [
       tier,
       status,
       subscription.id,
-      periodEnd,
-      userId,
+      ...(periodEnd ? [periodEnd, userId] : [userId]),
     ]
   );
 

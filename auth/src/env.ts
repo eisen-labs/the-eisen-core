@@ -53,8 +53,23 @@ const envSchema = z.object({
   STRIPE_PREMIUM_PRICE_ID: z.string().optional(),
   PUBLIC_URL: z.string().url().default("http://localhost:3000"),
 
+  // ── Stripe (sandbox) ───────────────────────────────────
+  SANDBOX_WEBHOOK_SECRET: z.string().optional(),
+  SANDBOX_SECRET_KEY: z.string().optional(),
+  SANDBOX_PRO_PRICE_ID: z.string().optional(),
+  SANDBOX_PREMIUM_PRICE_ID: z.string().optional(),
+  SANDBOX_PUBLIC_URL: z.string().url().default("http://localhost:3000"),
+
   // ── Admin ─────────────────────────────────────────────
   ADMIN_SECRET: z.string().optional(),
+}).superRefine((data, ctx) => {
+  if (data.NODE_ENV === "development" && !data.SANDBOX_WEBHOOK_SECRET) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "SANDBOX_WEBHOOK_SECRET is required in development",
+      path: ["SANDBOX_WEBHOOK_SECRET"],
+    });
+  }
 });
 
 export type Env = z.infer<typeof envSchema>;
