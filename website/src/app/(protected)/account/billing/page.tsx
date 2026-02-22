@@ -9,11 +9,7 @@ import {
   type Plan,
 } from '@/lib/auth';
 
-const TIER_LABEL: Record<string, string> = {
-  free: 'Free',
-  pro: 'Pro',
-  premium: 'Premium',
-};
+const TIER_LABEL: Record<string, string> = { free: 'Free', pro: 'Pro', premium: 'Premium' };
 
 export default function BillingPage() {
   const { user, loading: authLoading, refreshUser } = useAuth();
@@ -29,17 +25,16 @@ export default function BillingPage() {
       .finally(() => setLoadingPlans(false));
   }, []);
 
-  const currentTier = user?.subscription?.tier ?? 'free';
-  const currentStatus = user?.subscription?.status ?? 'active';
-  const isPaid = currentTier !== 'free';
-  const isActive = currentStatus === 'active';
+  const tier = user?.subscription?.tier ?? 'free';
+  const status = user?.subscription?.status ?? 'active';
+  const isPaid = tier !== 'free';
+  const isActive = status === 'active';
 
-  async function handleUpgrade(tier: 'pro' | 'premium') {
-    setActionLoading(tier);
+  async function handleUpgrade(t: 'pro' | 'premium') {
+    setActionLoading(t);
     setError(null);
     try {
-      const url = await createCheckoutSession(tier);
-      window.location.href = url;
+      window.location.href = await createCheckoutSession(t);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong.');
       setActionLoading(null);
@@ -50,23 +45,19 @@ export default function BillingPage() {
     setActionLoading('portal');
     setError(null);
     try {
-      const url = await createPortalSession();
-      window.location.href = url;
+      window.location.href = await createPortalSession();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong.');
       setActionLoading(null);
     }
   }
 
-  async function handleRefreshStatus() {
-    await refreshUser();
-  }
-
   if (authLoading || loadingPlans) {
     return (
       <div className="space-y-6">
         <h2 className="text-lg font-medium">Billing</h2>
-        <div className="bg-foreground/5 h-16 animate-pulse rounded-lg" />
+        <div className="bg-foreground/5 h-16 animate-pulse rounded-xl" />
+        <div className="bg-foreground/5 h-16 animate-pulse rounded-xl" />
       </div>
     );
   }
@@ -78,54 +69,68 @@ export default function BillingPage() {
       {error && <p className="text-sm text-red-500">{error}</p>}
 
       {/* Current plan */}
-      <div className="bg-foreground/5 flex items-center justify-between rounded-lg p-4">
-        <div>
-          <p className="text-sm font-medium">{TIER_LABEL[currentTier] ?? currentTier} plan</p>
-          <p className="text-foreground/40 text-xs capitalize">
-            {isActive ? 'Active' : currentStatus}
-          </p>
+      <div className="bg-foreground/5 rounded-xl p-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className={`h-2 w-2 rounded-full ${isActive ? 'bg-green-500' : 'bg-foreground/20'}`} />
+            <p className="text-sm font-medium">{TIER_LABEL[tier] ?? tier} plan</p>
+          </div>
+          <span className="text-foreground/40 text-xs capitalize">{status}</span>
         </div>
-        {isPaid && isActive ? (
+
+        {isPaid && isActive && (
           <button
             onClick={() => void handlePortal()}
             disabled={actionLoading === 'portal'}
-            className="bg-foreground text-background hover:bg-foreground/80 rounded-lg px-4 py-1.5 text-sm font-medium disabled:opacity-50"
+            className="mt-3 text-xs text-foreground/40 hover:text-foreground underline underline-offset-2 disabled:opacity-50 transition-colors"
           >
-            {actionLoading === 'portal' ? 'Loading…' : 'Manage'}
+            {actionLoading === 'portal' ? 'Loading…' : 'Manage subscription →'}
           </button>
-        ) : (
+        )}
+
+        {!isActive && isPaid && (
           <button
-            onClick={() => void handleRefreshStatus()}
-            className="text-foreground/40 hover:text-foreground rounded-lg px-4 py-1.5 text-sm"
+            onClick={() => void refreshUser()}
+            className="mt-3 text-xs text-foreground/40 hover:text-foreground underline underline-offset-2 transition-colors"
           >
-            Refresh
+            Refresh status
           </button>
         )}
       </div>
 
-      {/* Upgrade options for free users */}
-      {!isPaid && (
+      {/* Upgrade options */}
+      {!isPaid && plans.filter((p) => p.tier !== 'free').length > 0 && (
         <div className="space-y-3">
+          <p className="text-foreground/40 text-xs">Upgrade your plan</p>
           {plans
             .filter((p) => p.tier !== 'free')
             .map((plan) => (
               <div
                 key={plan.tier}
-                className="border-foreground/10 flex items-center justify-between rounded-lg border p-4"
+                className="border-foreground/10 rounded-xl border p-4"
               >
-                <div>
-                  <p className="text-sm font-medium">{TIER_LABEL[plan.tier] ?? plan.tier}</p>
-                  {plan.features.length > 0 && (
-                    <p className="text-foreground/40 mt-0.5 text-xs">{plan.features[0]}</p>
-                  )}
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">{TIER_LABEL[plan.tier] ?? plan.tier}</p>
+                    {plan.features.length > 0 && (
+                      <ul className="mt-2 space-y-1">
+                        {plan.features.map((f) => (
+                          <li key={f} className="text-foreground/50 flex items-center gap-1.5 text-xs">
+                            <span className="text-foreground/30">·</span>
+                            {f}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => void handleUpgrade(plan.tier as 'pro' | 'premium')}
+                    disabled={actionLoading === plan.tier}
+                    className="bg-foreground text-background hover:bg-foreground/80 flex-shrink-0 rounded-lg px-4 py-1.5 text-sm font-medium disabled:opacity-50 transition-colors"
+                  >
+                    {actionLoading === plan.tier ? 'Loading…' : 'Upgrade'}
+                  </button>
                 </div>
-                <button
-                  onClick={() => void handleUpgrade(plan.tier as 'pro' | 'premium')}
-                  disabled={actionLoading === plan.tier}
-                  className="bg-foreground text-background hover:bg-foreground/80 rounded-lg px-4 py-1.5 text-sm font-medium disabled:opacity-50"
-                >
-                  {actionLoading === plan.tier ? 'Loading…' : 'Upgrade'}
-                </button>
               </div>
             ))}
         </div>

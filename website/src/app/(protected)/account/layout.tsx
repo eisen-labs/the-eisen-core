@@ -8,7 +8,7 @@ export default function AccountLayout({ children }: { children: React.ReactNode 
       <Link href="/" className="mb-8">
         <Logo className="marquee-logo h-8 md:h-11" />
       </Link>
-      <div className="w-full max-w-[500px]">
+      <div className="w-full max-w-[560px]">
         <AccountNav />
         <main className="pt-8">{children}</main>
       </div>
