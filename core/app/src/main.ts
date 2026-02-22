@@ -269,12 +269,19 @@ class Eisen {
   private handleSend(text: string, instanceId: string | null, chips: any[]) {
     const contextChips = chips.length ? chips : undefined;
 
-    if (instanceId) {
-      this.chat.addMessage({ from: "user", text, instanceId });
-      ipc.send({ type: "sendMessage", text, instanceId, contextChips });
+    // Resolve active instance: use the explicit one from the chat component,
+    // or fall back to whatever the top bar has selected (covers the orchestration
+    // "awaiting approval" state where the orchestrator tab is active but the
+    // chat's internal activeId may be null).
+    const resolvedId = instanceId ?? this.topBar.getSelected();
+
+    if (resolvedId) {
+      this.chat.addMessage({ from: "user", text, instanceId: resolvedId });
+      ipc.send({ type: "sendMessage", text, instanceId: resolvedId, contextChips });
       return;
     }
 
+    // No active session at all — spawn a new one.
     const pending = this.chat.getPendingAgent()
       ?? (this.agents.length ? { type: this.agents[0].id, mode: "single_agent" as const } : null);
     if (!pending) return;
@@ -357,16 +364,53 @@ class Eisen {
       }
 
       case "userMessage": return;
-      case "streamStart": { const id = this.msgInstanceId(msg); if (id) { this.topBar.setStreaming(id, true); this.chat.streamStart(id); } return; }
-      case "streamChunk": { const id = this.msgInstanceId(msg); if (id && typeof msg.text === "string") this.chat.streamChunk(msg.text as string, id); return; }
-      case "streamEnd":   { const id = this.msgInstanceId(msg); if (id) { this.topBar.setStreaming(id, false); this.chat.streamEnd(id); } return; }
+      case "streamStart": {
+        const id = this.msgInstanceId(msg);
+        if (id) {
+          this.topBar.setStreaming(id, true);
+          // Chat component keeps a single live stream buffer; only render
+          // stream events for the currently selected tab to avoid cross-tab
+          // stream clobbering when orchestrator subtasks run in parallel.
+          if (id === this.topBar.getSelected()) this.chat.streamStart(id);
+        }
+        return;
+      }
+      case "streamChunk": {
+        const id = this.msgInstanceId(msg);
+        if (id && typeof msg.text === "string" && id === this.topBar.getSelected()) {
+          this.chat.streamChunk(msg.text as string, id);
+        }
+        return;
+      }
+      case "streamEnd": {
+        const id = this.msgInstanceId(msg);
+        if (id) {
+          this.topBar.setStreaming(id, false);
+          if (id === this.topBar.getSelected()) this.chat.streamEnd(id);
+        }
+        return;
+      }
 
-      case "toolCallStart": { const id = this.msgInstanceId(msg); this.chat.toolCallStart(this.stripCwd(msg.name ?? msg.title ?? ""), msg.toolCallId ?? "", id); return; }
+      case "toolCallStart": {
+        const id = this.msgInstanceId(msg);
+        if (id === this.topBar.getSelected()) {
+          this.chat.toolCallStart(this.stripCwd(msg.name ?? msg.title ?? ""), msg.toolCallId ?? "", id);
+        }
+        return;
+      }
       case "toolCallComplete": {
         const rawPath = msg.rawInput?.path || msg.rawInput?.command || msg.rawInput?.description || "";
         const input = rawPath ? this.stripCwd(String(rawPath)) : null;
         const id = this.msgInstanceId(msg);
-        this.chat.toolCallComplete(msg.toolCallId ?? "", msg.title ? this.stripCwd(msg.title) : null, msg.status ?? "completed", input, id);
+        if (id === this.topBar.getSelected()) {
+          this.chat.toolCallComplete(
+            msg.toolCallId ?? "",
+            msg.title ? this.stripCwd(msg.title) : null,
+            msg.status ?? "completed",
+            input,
+            id,
+          );
+        }
         return;
       }
 
@@ -403,6 +447,20 @@ class Eisen {
       case "orchestrationError":
         this.chat.addMessage({ from: "agent", text: `Orchestration error: ${msg.message}` });
         return;
+      case "state": {
+        // Orchestration lifecycle states surfaced to the chat.
+        const stateLabels: Record<string, string> = {
+          cancelled: "Orchestration cancelled.",
+          completed: "Orchestration completed.",
+          done: "Orchestration finished.",
+        };
+        const label = stateLabels[msg.state as string];
+        if (label) {
+          const id = this.topBar.getSelected();
+          this.chat.addMessage({ from: "agent", text: label, instanceId: id ?? undefined });
+        }
+        return;
+      }
     }
   }
 }

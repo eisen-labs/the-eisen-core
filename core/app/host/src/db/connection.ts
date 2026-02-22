@@ -1,11 +1,16 @@
 /**
- * SQLite connection manager for .eisen/workspace.db.
+ * SQLite connection helpers for .eisen/workspace.db.
  *
  * Uses Bun's built-in bun:sqlite (no native addon required) so the
  * compiled eisen-host binary works without external .node files.
  *
  * Auto-creates the `.eisen/` directory and database file on first access.
- * Provides a singleton connection per workspace path.
+ *
+ * NOTE: There is deliberately NO connection singleton here. Each WorkspaceDB
+ * instance owns its own Database object. SQLite in WAL mode handles concurrent
+ * readers natively, so a singleton adds no value and introduces close-races
+ * when multiple short-lived WorkspaceDB instances are used concurrently
+ * (e.g. loadOptimizedPrompts running in parallel with loadWorkspaceContext).
  */
 
 import { Database } from "bun:sqlite";
@@ -16,22 +21,16 @@ import { initSchema } from "./schema";
 const DB_DIR = ".eisen";
 const DB_FILE = "workspace.db";
 
-/** Active connections keyed by workspace path. */
-const connections = new Map<string, Database>();
-
 /**
- * Get or create a SQLite Database for the given workspace.
+ * Open a new SQLite Database for the given workspace.
  *
  * Creates `.eisen/workspace.db` on first call. Runs schema init
  * (idempotent table creation + migration) before returning.
  *
  * @param workspacePath - Absolute path to the workspace root
- * @returns Initialised Database instance
+ * @returns Initialised Database instance (caller is responsible for closing)
  */
 export async function getDatabase(workspacePath: string): Promise<Database> {
-  const existing = connections.get(workspacePath);
-  if (existing) return existing;
-
   const dbDir = path.join(workspacePath, DB_DIR);
   const dbPath = path.join(dbDir, DB_FILE);
 
@@ -47,30 +46,18 @@ export async function getDatabase(workspacePath: string): Promise<Database> {
 
   initSchema(db);
 
-  connections.set(workspacePath, db);
   return db;
 }
 
 /**
- * Close and remove the connection for a workspace.
- * Called on extension deactivation.
+ * Close a specific Database instance.
+ * Provided for callers that need an explicit close outside of WorkspaceDB.
  */
-export function closeDatabase(workspacePath: string): void {
-  const db = connections.get(workspacePath);
-  if (db) {
+export function closeDatabase(db: Database): void {
+  try {
     db.close();
-    connections.delete(workspacePath);
-  }
-}
-
-/**
- * Close all open database connections.
- * Called on extension deactivation.
- */
-export function closeAllDatabases(): void {
-  for (const [wsPath, db] of connections) {
-    db.close();
-    connections.delete(wsPath);
+  } catch {
+    // Ignore double-close errors
   }
 }
 

@@ -34,7 +34,7 @@ export { createAgents } from "./agents";
 export type { AgentModelConfig, OrchestratorAgents } from "./agents";
 
 // Workflow
-export { orchestrate, executeAndEvaluate } from "./orchestrate";
+export { orchestrate, executeAndEvaluate, extractExplicitAgentPreference } from "./orchestrate";
 export type { OrchestrationConfig, AgentAssignment, PendingApprovalData } from "./orchestrate";
 
 // Supporting utilities

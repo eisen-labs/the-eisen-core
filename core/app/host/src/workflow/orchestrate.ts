@@ -15,7 +15,7 @@
 import { WorkspaceDB } from "../db";
 import type { ACPClient } from "../acp/client";
 import { refreshStaleRegionInsights } from "./region-insights";
-import type { OrchestratorAgents } from "./agents";
+import { createAgents, type OrchestratorAgents } from "./agents";
 import { loadWorkspaceContext, formatContextForPrompt, type WorkspaceContext } from "./context-loader";
 import { buildExecutionBatches, type BatchItem } from "./topo-sort";
 import { CostTracker } from "./cost-tracker";
@@ -47,6 +47,8 @@ export interface PendingApprovalData {
   cost: CostTracker;
   runId: string;
   runStart: number;
+  /** Agents instance built for this run (carries optimized prompts). */
+  agents: OrchestratorAgents;
 }
 
 export type WarmClient = { client: ACPClient; sessionId: string; dispose: () => void };
@@ -57,8 +59,15 @@ export interface OrchestrationConfig {
   effort: EffortLevel;
   autoApprove: boolean;
   maxAgents: number;
-  agents: OrchestratorAgents;
-  /** IPC send function -- writes JSON events to stdout for Tauri. */
+  /**
+   * Orchestrator model string. Agents are constructed fresh per run inside
+   * `orchestrate()` so that optimized prompts loaded from the DB are always
+   * reflected. Pass pre-built `_agents` only for testing.
+   */
+  model: string;
+  /** @internal Pre-built agents — for testing only. Skips DB prompt loading. */
+  _agents?: OrchestratorAgents;
+  /** IPC send function — writes JSON events to stdout for Tauri. */
   send: (msg: Record<string, unknown>) => void;
   /** NAPI-RS parser functions (optional, for workspace parsing). */
   napi?: {
@@ -74,6 +83,7 @@ export interface OrchestrationConfig {
   onPendingApproval?: (data: PendingApprovalData) => void;
   onSubtaskStart?: (sessionId: string, subtask: Subtask, agentId: string) => void;
   onSubtaskComplete?: (sessionId: string, subtask: Subtask, agentOutput: string) => void;
+  onSubtaskFailed?: (sessionId: string, subtask: Subtask, agentId: string, reason: string) => void;
 }
 
 export interface AgentAssignment {
@@ -95,6 +105,9 @@ type ConfirmCallback = (plan: {
  * Run the full orchestration pipeline.
  *
  * This replaces the Python Orchestrator.run() method.
+ *
+ * Agents are constructed fresh per run so that optimized prompts loaded from
+ * the workspace DB are always reflected without requiring a process restart.
  */
 export async function orchestrate(config: OrchestrationConfig): Promise<OrchestrationOutput> {
   const {
@@ -103,7 +116,7 @@ export async function orchestrate(config: OrchestrationConfig): Promise<Orchestr
     effort,
     autoApprove,
     maxAgents,
-    agents,
+    model,
     send,
     napi,
   } = config;
@@ -113,14 +126,20 @@ export async function orchestrate(config: OrchestrationConfig): Promise<Orchestr
   const runId = crypto.randomUUID().slice(0, 8);
 
   // -----------------------------------------------------------------------
-  // 1. Load workspace context
+  // 1. Load workspace context + optimized prompts (parallel)
   // -----------------------------------------------------------------------
   send({ type: "state", state: "loading-context" });
 
-  const context = await loadWorkspaceContext(workspacePath, userIntent, {
-    parseWorkspace: napi?.parseWorkspace,
-    snapshot: napi?.snapshot,
-  });
+  const [context, optimizedPrompts] = await Promise.all([
+    loadWorkspaceContext(workspacePath, userIntent, {
+      parseWorkspace: napi?.parseWorkspace,
+      snapshot: napi?.snapshot,
+    }),
+    loadOptimizedPrompts(workspacePath),
+  ]);
+
+  // Build agents with any DB-stored prompt overrides applied
+  const agents = config._agents ?? createAgents({ model, optimizedPrompts });
 
   // -----------------------------------------------------------------------
   // 2. Decompose task
@@ -157,6 +176,7 @@ export async function orchestrate(config: OrchestrationConfig): Promise<Orchestr
     agents,
     context,
     workspacePath,
+    userIntent,
     cost,
     config.availableAgents,
   );
@@ -183,7 +203,7 @@ export async function orchestrate(config: OrchestrationConfig): Promise<Orchestr
   send({ type: "plan", ...plan });
 
   if (!autoApprove) {
-    config.onPendingApproval?.({ assignments, context, cost, runId, runStart });
+    config.onPendingApproval?.({ assignments, context, cost, runId, runStart, agents });
     return {
       status: "pending_approval",
       subtaskResults: [],
@@ -195,22 +215,27 @@ export async function orchestrate(config: OrchestrationConfig): Promise<Orchestr
   // -----------------------------------------------------------------------
   // 5 & 6. Execute and evaluate
   // -----------------------------------------------------------------------
-  return executeAndEvaluate(config, assignments, context, cost, runId, runStart);
+  return executeAndEvaluate(config, agents, assignments, context, cost, runId, runStart);
 }
 
 /**
  * Execute an approved plan. Called after user confirms the plan
  * (or immediately if autoApprove is true).
+ *
+ * `agents` is passed explicitly so that the pending-approval resume path
+ * (which stores agents on PendingApprovalData) uses the same optimized
+ * prompts that were loaded when the plan was originally built.
  */
 export async function executeAndEvaluate(
   config: OrchestrationConfig,
+  agents: OrchestratorAgents,
   assignments: AgentAssignment[],
   context: WorkspaceContext,
   cost: CostTracker,
   runId: string,
   runStart: number,
 ): Promise<OrchestrationOutput> {
-  const { workspacePath, userIntent, maxAgents, agents, send, napi } = config;
+  const { workspacePath, userIntent, maxAgents, send, napi } = config;
 
   // -----------------------------------------------------------------------
   // 5. Build prompts and execute via ACP
@@ -321,14 +346,28 @@ async function assignAgents(
   agents: OrchestratorAgents,
   context: WorkspaceContext,
   workspacePath: string,
+  userIntent: string,
   cost: CostTracker,
   availableAgents?: string[],
 ): Promise<AgentAssignment[]> {
   const assignments: AgentAssignment[] = [];
 
+  // If the user explicitly named an agent in their query, honour it for all
+  // subtasks — no DB lookup, no LLM call needed.
+  const explicitAgent = extractExplicitAgentPreference(userIntent);
+
   for (let i = 0; i < subtasks.length; i++) {
     const subtask = subtasks[i];
     const language = detectLanguage(subtask.region);
+
+    if (explicitAgent) {
+      assignments.push({
+        subtask,
+        subtaskIndex: i,
+        agentId: explicitAgent,
+      });
+      continue;
+    }
 
     // Check if DB has a confident agent recommendation
     const dbBest = findBestAgentFromStats(
@@ -349,10 +388,11 @@ async function assignAgents(
     // Fall back to LLM selection
     const statsInfo = formatAgentStats(context.agentStats, subtask.region, language);
     const prompt = [
+      `User query: ${userIntent}`,
       `Subtask: ${subtask.description}`,
       `Region: ${subtask.region}`,
       `Primary language: ${language}`,
-      `Available agents: ${(availableAgents ?? ["opencode", "claude-code", "codex", "gemini", "goose", "amp", "aider"]).join(", ")}`,
+      `Available agents: opencode, claude-code, codex, openai, gemini, goose, amp, aider`,
       statsInfo ? `\nPerformance data:\n${statsInfo}` : "",
     ]
       .filter(Boolean)
@@ -510,7 +550,8 @@ async function executeViaACP(
     config.onSubtaskComplete?.(w.sessionId, subtask, output);
     return output;
   } catch (error) {
-    config.onSubtaskComplete?.(w.sessionId, subtask, `Error: ${error instanceof Error ? error.message : String(error)}`);
+    const reason = error instanceof Error ? error.message : String(error);
+    config.onSubtaskFailed?.(w.sessionId, subtask, agentId, reason);
     throw error;
   } finally {
     try {
@@ -683,6 +724,100 @@ function formatAgentStats(
 }
 
 type AgentPerformance = import("../db").AgentPerformance;
+type OptimizedPromptStep = import("../db").OptimizedPromptStep;
+
+// ---------------------------------------------------------------------------
+// Explicit agent preference extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * Known coding agents and their aliases as they might appear in user queries.
+ *
+ * Order matters — more specific patterns are listed first to avoid partial
+ * matches (e.g. "openai" must be checked before "open").
+ */
+const AGENT_ALIASES: Array<{ pattern: RegExp; agentId: string }> = [
+  { pattern: /\bclaude[\s-]?code\b/i, agentId: "claude-code" },
+  { pattern: /\bclaude\b/i,           agentId: "claude-code" },
+  { pattern: /\bopencode\b/i,         agentId: "opencode"    },
+  { pattern: /\bcodex\b/i,            agentId: "codex"       },
+  { pattern: /\bopenai\b/i,           agentId: "openai"      },
+  { pattern: /\bgpt[\s-]?4\b/i,       agentId: "openai"      },
+  { pattern: /\bgpt4\b/i,             agentId: "openai"      },
+  { pattern: /\bgpt\b/i,              agentId: "openai"      },
+  { pattern: /\bgemini\b/i,           agentId: "gemini"      },
+  { pattern: /\bgoose\b/i,            agentId: "goose"       },
+  { pattern: /\bamp\b/i,              agentId: "amp"         },
+  { pattern: /\baider\b/i,            agentId: "aider"       },
+];
+
+/**
+ * Verb prefixes that signal an explicit agent request.
+ * "use claude", "with codex", "run gemini", "spawn aider", "via openai"
+ */
+const INTENT_VERBS = /\b(?:use|using|with|run|spawn|via|through|assign|prefer)\s+/i;
+
+/**
+ * Extract an explicit agent preference from a user intent string.
+ *
+ * Returns a canonical agent ID (e.g. "claude-code") if the user named a
+ * specific agent, or null if no explicit preference was found.
+ *
+ * Examples:
+ *   "use claude to add rate limiting"   → "claude-code"
+ *   "run this with codex"               → "codex"
+ *   "add pagination (gemini agent)"     → "gemini"
+ *   "refactor the auth module"          → null
+ */
+export function extractExplicitAgentPreference(intent: string): string | null {
+  for (const { pattern, agentId } of AGENT_ALIASES) {
+    const match = intent.match(pattern);
+    if (!match) continue;
+
+    // Accept if preceded by an intent verb OR followed by "agent"
+    const before = intent.slice(0, match.index ?? 0);
+    const after  = intent.slice((match.index ?? 0) + match[0].length);
+
+    if (INTENT_VERBS.test(before) || /^\s*agent\b/i.test(after)) {
+      return agentId;
+    }
+
+    // Also accept bare agent name at the start of the query
+    // e.g. "claude: add rate limiting to the API"
+    if ((match.index ?? 0) === 0 || /^[\s,;:-]+$/.test(before.trim() === "" ? "" : before)) {
+      const trimmedBefore = before.trimStart();
+      if (trimmedBefore === "" || /^[\s,;:-]*$/.test(trimmedBefore)) {
+        return agentId;
+      }
+    }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Optimized prompt loader
+// ---------------------------------------------------------------------------
+
+/**
+ * Load optimized system prompts from the workspace DB.
+ * Returns an empty object if the DB doesn't exist yet or has no rows —
+ * the caller falls back to DEFAULT_PROMPTS for any missing step.
+ */
+async function loadOptimizedPrompts(
+  workspacePath: string,
+): Promise<Partial<Record<OptimizedPromptStep, string>>> {
+  try {
+    const db = new WorkspaceDB(workspacePath);
+    try {
+      return await db.getAllOptimizedPrompts();
+    } finally {
+      db.close();
+    }
+  } catch {
+    // DB may not exist yet (first run) — not an error
+    return {};
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Semaphore (simple async concurrency limiter)

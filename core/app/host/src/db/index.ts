@@ -17,12 +17,13 @@ export type {
   AgentPerformance,
   RegionInsight,
   SymbolCacheEntry,
+  OptimizedPrompt,
+  OptimizedPromptStep,
 } from "./workspace-db";
 
 export {
   getDatabase,
   closeDatabase,
-  closeAllDatabases,
   getDatabasePath,
 } from "./connection";
 

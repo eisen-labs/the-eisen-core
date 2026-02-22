@@ -7,7 +7,7 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { getDatabase, closeDatabase } from "./connection";
+import { getDatabase } from "./connection";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -89,6 +89,16 @@ export interface SymbolCacheEntry {
   cachedAt: number;
 }
 
+export type OptimizedPromptStep = "taskDecompose" | "agentSelect" | "promptBuild" | "progressEval";
+
+export interface OptimizedPrompt {
+  targetStep: OptimizedPromptStep;
+  systemPrompt: string;
+  generatedAt: number;
+  repoProfile: string; // JSON
+  model: string;
+}
+
 // ---------------------------------------------------------------------------
 // WorkspaceDB
 // ---------------------------------------------------------------------------
@@ -111,8 +121,14 @@ export class WorkspaceDB {
 
   /** Close the database connection. */
   close(): void {
-    closeDatabase(this.workspacePath);
-    this.db = null;
+    if (this.db) {
+      try {
+        this.db.close();
+      } catch {
+        // Ignore double-close errors
+      }
+      this.db = null;
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -357,10 +373,17 @@ export class WorkspaceDB {
   /**
    * Derive co-change relationships from a set of git patterns.
    * For each commit with N files, creates N*(N-1)/2 co-change pairs.
+   *
+   * Commits touching more than MAX_COCHANGE_FILES files are skipped — these
+   * are bulk refactors / renames that produce O(N²) low-signal pairs and
+   * are the primary cause of table bloat.
    */
   async deriveCochangeFromPatterns(patterns: GitPattern[]): Promise<void> {
+    const MAX_COCHANGE_FILES = 25;
     for (const pattern of patterns) {
       const files = pattern.filesChanged;
+      // Skip large commits — they produce noisy, low-value pairs at O(N²) cost
+      if (files.length > MAX_COCHANGE_FILES) continue;
       for (let i = 0; i < files.length; i++) {
         for (let j = i + 1; j < files.length; j++) {
           await this.upsertCochange(files[i], files[j], pattern.timestamp);
@@ -669,6 +692,61 @@ export class WorkspaceDB {
   }
 
   // -------------------------------------------------------------------------
+  // optimized_prompts
+  // -------------------------------------------------------------------------
+
+  /**
+   * Read an optimized system prompt for a given orchestration step.
+   * Returns null if no optimized prompt has been generated yet (caller
+   * falls back to the static default in agents.ts).
+   */
+  async getOptimizedPrompt(targetStep: OptimizedPromptStep): Promise<OptimizedPrompt | null> {
+    const db = await this.client();
+    const row = db
+      .query("SELECT * FROM optimized_prompts WHERE target_step = ?")
+      .get(targetStep) as Record<string, unknown> | null;
+    if (!row) return null;
+    return {
+      targetStep: row.target_step as OptimizedPromptStep,
+      systemPrompt: row.system_prompt as string,
+      generatedAt: row.generated_at as number,
+      repoProfile: row.repo_profile as string,
+      model: row.model as string,
+    };
+  }
+
+  /**
+   * Read all optimized prompts at once (one query instead of four).
+   * Returns a map of step → system prompt string for steps that have been optimized.
+   */
+  async getAllOptimizedPrompts(): Promise<Partial<Record<OptimizedPromptStep, string>>> {
+    const db = await this.client();
+    const rows = db
+      .query("SELECT target_step, system_prompt FROM optimized_prompts")
+      .all() as Record<string, unknown>[];
+    const result: Partial<Record<OptimizedPromptStep, string>> = {};
+    for (const row of rows) {
+      result[row.target_step as OptimizedPromptStep] = row.system_prompt as string;
+    }
+    return result;
+  }
+
+  /** Write or replace an optimized prompt. Called by scripts/optimize-prompts.ts. */
+  async upsertOptimizedPrompt(data: {
+    targetStep: OptimizedPromptStep;
+    systemPrompt: string;
+    repoProfile: string;
+    model: string;
+  }): Promise<void> {
+    const db = await this.client();
+    db.prepare(
+      `INSERT OR REPLACE INTO optimized_prompts
+         (target_step, system_prompt, generated_at, repo_profile, model)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(data.targetStep, data.systemPrompt, Date.now(), data.repoProfile, data.model);
+  }
+
+  // -------------------------------------------------------------------------
   // Maintenance
   // -------------------------------------------------------------------------
 
@@ -687,10 +765,12 @@ export class WorkspaceDB {
    * - task_history: keep last 500 entries
    * - git_patterns: keep last 1000 commits
    * - symbol_cache: evict entries older than 7 days
+   * - file_cochange: keep top 500 pairs by frequency; drop pairs not seen in 90 days
    */
   async cleanup(): Promise<void> {
     const db = await this.client();
     const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const ninetyDaysAgo = Date.now() - 90 * 24 * 60 * 60 * 1000;
 
     db.exec(
       `DELETE FROM task_history WHERE id NOT IN
@@ -701,5 +781,15 @@ export class WorkspaceDB {
        (SELECT id FROM git_patterns ORDER BY timestamp DESC LIMIT 1000)`,
     );
     db.prepare("DELETE FROM symbol_cache WHERE cached_at < ?").run(sevenDaysAgo);
+
+    // Prune stale co-change pairs (not seen in 90 days)
+    db.prepare("DELETE FROM file_cochange WHERE last_seen < ?").run(ninetyDaysAgo);
+    // Keep only the top 500 most frequent pairs — the long tail is noise
+    db.exec(
+      `DELETE FROM file_cochange WHERE (file_a, file_b) NOT IN (
+         SELECT file_a, file_b FROM file_cochange
+         ORDER BY cochange_count DESC LIMIT 500
+       )`,
+    );
   }
 }

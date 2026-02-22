@@ -13,6 +13,7 @@ import * as readline from "node:readline";
 import type {
   CreateTerminalRequest,
   CreateTerminalResponse,
+  EnvVariable,
   KillTerminalCommandRequest,
   KillTerminalCommandResponse,
   ReadTextFileRequest,
@@ -20,6 +21,7 @@ import type {
   ReleaseTerminalRequest,
   ReleaseTerminalResponse,
   SessionNotification,
+  TerminalExitStatus,
   TerminalOutputRequest,
   TerminalOutputResponse,
   WaitForTerminalExitRequest,
@@ -39,7 +41,6 @@ import { FileSearchService } from "./file-search-service";
 import {
   orchestrate,
   executeAndEvaluate,
-  createAgents,
   CostTracker,
   type OrchestrationConfig,
   type AgentAssignment,
@@ -133,7 +134,10 @@ function languageIdFromPath(filePath: string): string {
   return LANG_MAP[ext] ?? "plaintext";
 }
 
-async function handleReadTextFile(params: ReadTextFileRequest): Promise<ReadTextFileResponse> {
+/** SDK ReadTextFileResponse extended with the languageId we surface over IPC. */
+type ReadTextFileResponseExt = ReadTextFileResponse & { languageId: string };
+
+async function handleReadTextFile(params: ReadTextFileRequest): Promise<ReadTextFileResponseExt> {
   try {
     let content = await fs.promises.readFile(params.path, "utf-8");
     if (params.line !== undefined || params.limit !== undefined) {
@@ -171,8 +175,8 @@ interface ManagedTerminal {
   output: string;
   outputByteLimit: number | null;
   truncated: boolean;
-  exitCode: number | null;
-  signal: string | null;
+  /** ACP-typed exit status — matches TerminalExitStatus. Null while running. */
+  exitStatus: TerminalExitStatus | null;
   exitPromise: Promise<void>;
   exitResolve: () => void;
 }
@@ -198,36 +202,43 @@ async function handleCreateTerminal(params: CreateTerminalRequest): Promise<Crea
     output: "",
     outputByteLimit: params.outputByteLimit ?? null,
     truncated: false,
-    exitCode: null,
-    signal: null,
+    exitStatus: null,
     exitPromise,
     exitResolve,
   };
   terminals.set(id, terminal);
 
+  // SDK env is Array<EnvVariable>; convert to a plain object for Node's spawn
+  const envOverrides: Record<string, string> = {};
+  for (const { name, value } of params.env ?? []) {
+    envOverrides[name] = value;
+  }
+
   try {
+    // Spawn with stdio: "pipe" so we get typed handles and avoid the overload
+    // collision between the various spawn signatures.
     const proc = spawn(params.command, params.args ?? [], {
-      cwd: params.workingDirectory || getCwd(),
-      env: { ...process.env, ...(params.env ?? {}) },
+      cwd: params.cwd ?? getCwd(),
+      env: { ...process.env, ...envOverrides },
       shell: true,
+      stdio: "pipe",
     });
     terminal.proc = proc;
 
-    proc.stdout?.on("data", (data: Buffer) => appendTerminalOutput(terminal, data.toString()));
-    proc.stderr?.on("data", (data: Buffer) => appendTerminalOutput(terminal, data.toString()));
-    proc.on("exit", (code, signal) => {
-      terminal.exitCode = code;
-      terminal.signal = signal;
+    proc.stdout.on("data", (data: Buffer) => appendTerminalOutput(terminal, data.toString()));
+    proc.stderr.on("data", (data: Buffer) => appendTerminalOutput(terminal, data.toString()));
+    proc.on("exit", (code: number | null, signal: NodeJS.Signals | null) => {
+      terminal.exitStatus = { exitCode: code, signal };
       terminal.exitResolve();
     });
-    proc.on("error", (err) => {
+    proc.on("error", (err: Error) => {
       appendTerminalOutput(terminal, `[Process error: ${err.message}]`);
-      terminal.exitCode = -1;
+      terminal.exitStatus = { exitCode: -1, signal: null };
       terminal.exitResolve();
     });
   } catch (err) {
     appendTerminalOutput(terminal, `[Failed to spawn: ${err instanceof Error ? err.message : String(err)}]`);
-    terminal.exitCode = -1;
+    terminal.exitStatus = { exitCode: -1, signal: null };
     terminal.exitResolve();
   }
 
@@ -236,11 +247,10 @@ async function handleCreateTerminal(params: CreateTerminalRequest): Promise<Crea
 
 async function handleTerminalOutput(params: TerminalOutputRequest): Promise<TerminalOutputResponse> {
   const terminal = terminals.get(params.terminalId);
-  if (!terminal) return { output: "", exitCode: null };
+  if (!terminal) return { output: "", truncated: false };
   return {
     output: terminal.output,
-    exitCode: terminal.exitCode,
-    exitSignal: terminal.signal ?? undefined,
+    exitStatus: terminal.exitStatus ?? undefined,
     truncated: terminal.truncated,
   };
 }
@@ -249,14 +259,17 @@ async function handleWaitForTerminalExit(params: WaitForTerminalExitRequest): Pr
   const terminal = terminals.get(params.terminalId);
   if (!terminal) return { exitCode: -1 };
   await terminal.exitPromise;
-  return { exitCode: terminal.exitCode ?? -1, exitSignal: terminal.signal ?? undefined };
+  return {
+    exitCode: terminal.exitStatus?.exitCode ?? -1,
+    signal: terminal.exitStatus?.signal ?? null,
+  };
 }
 
 async function handleKillTerminalCommand(params: KillTerminalCommandRequest): Promise<KillTerminalCommandResponse> {
   const terminal = terminals.get(params.terminalId);
   if (!terminal?.proc || terminal.proc.killed) return {};
   try {
-    terminal.proc.kill(params.signal as NodeJS.Signals | undefined);
+    terminal.proc.kill();
   } catch {}
   return {};
 }
@@ -430,6 +443,7 @@ const sm = createSessionManager({
 // Set up the orchestration approval interceptor
 let pendingOrchestration: {
   config: OrchestrationConfig;
+  agents: OrchestratorAgents;
   assignments: AgentAssignment[];
   context: WorkspaceContext;
   cost: CostTracker;
@@ -438,12 +452,13 @@ let pendingOrchestration: {
 } | null = null;
 
 sm.setMessageInterceptor(async (text: string) => {
-  const trimmed = text.trim();
-  if (pendingOrchestration && /^(y|yes|approve|accept)$/i.test(trimmed)) {
+  if (!pendingOrchestration) return false;
+  const trimmed = text.trim().replace(/[.!?]+$/, "");
+  if (/^(y|yes|approve|accept|proceed|go ahead|looks good|sounds good|ok|okay)$/i.test(trimmed)) {
     await handleOrchestrationApprove(true);
     return true;
   }
-  if (pendingOrchestration && /^(n|no|cancel|decline)$/i.test(trimmed)) {
+  if (/^(n|no|cancel|decline|abort|stop|nope|nah)$/i.test(trimmed)) {
     await handleOrchestrationApprove(false);
     return true;
   }
@@ -454,22 +469,11 @@ sm.setMessageInterceptor(async (text: string) => {
 // Orchestration workflow (Mastra-based)
 // ---------------------------------------------------------------------------
 
-let orchestratorAgents: OrchestratorAgents | null = null;
-
 function pickOrchestratorModel(): string {
   if (process.env.EISEN_ORCHESTRATOR_MODEL) return process.env.EISEN_ORCHESTRATOR_MODEL;
   if (process.env.ANTHROPIC_API_KEY) return "anthropic/claude-sonnet-4-20250514";
   if (process.env.OPENAI_API_KEY) return "openai/gpt-4o";
   return "anthropic/claude-sonnet-4-20250514";
-}
-
-function getOrchestratorAgents(): OrchestratorAgents {
-  if (!orchestratorAgents) {
-    const model = pickOrchestratorModel();
-    console.error(`[eisen-host] Orchestrator model: ${model}`);
-    orchestratorAgents = createAgents({ model });
-  }
-  return orchestratorAgents;
 }
 
 async function handleOrchestrate(
@@ -479,6 +483,11 @@ async function handleOrchestrate(
 ): Promise<void> {
   const instanceId = sm.getCurrentInstanceKey();
   const sessionInstanceMap = new Map<string, string>();
+  const writtenFiles: string[] = [];
+  const subtaskFindings: Array<{ agentId: string; finding: string }> = [];
+  const subtaskFailures: Array<{ description: string; reason: string }> = [];
+  let subtaskTotal = 0;
+  let subtaskCompleted = 0;
 
   const sendChatMsg = (text: string, from: string = "agent") => {
     if (instanceId) sm.pushMessage(instanceId, { from, text });
@@ -507,9 +516,28 @@ async function handleOrchestrate(
       const { subtaskIndex, agentId, status } = msg as Record<string, unknown>;
       sendChatMsg(`Subtask ${Number(subtaskIndex) + 1}: ${agentId} -> ${status}`);
     } else if (msg.type === "result") {
-      const results = (msg.subtaskResults as Array<{ status: string }>) ?? [];
-      const completed = results.filter((r) => r.status === "completed").length;
-      sendChatMsg(`Done! ${completed}/${results.length} subtasks completed.`);
+      // Use our own tracked counts — the AI evaluator's status field is unreliable
+      const lines: string[] = [`Done! ${subtaskCompleted}/${subtaskTotal} subtasks completed.`];
+
+      const unique = [...new Set(writtenFiles)];
+      const fileList = unique.length > 0
+        ? unique.map((f) => `- ${path.relative(getCwd(), f) || f}`).join("\n")
+        : "- None";
+      lines.push(`\nFiles created or changed:\n${fileList}`);
+
+      const findingList = subtaskFindings.length > 0
+        ? subtaskFindings.map((f) => `- **${f.agentId}**: ${f.finding}`).join("\n")
+        : "- None";
+      lines.push(`\n\nFindings:\n${findingList}`);
+
+      if (subtaskFailures.length > 0) {
+        const failList = subtaskFailures
+          .map((f) => `- ${f.description}: ${f.reason}`)
+          .join("\n");
+        lines.push(`\n\nFailed:\n${failList}`);
+      }
+
+      sendChatMsg(lines.join(""));
     }
   };
 
@@ -522,7 +550,7 @@ async function handleOrchestrate(
       effort: effort as "low" | "medium" | "high",
       autoApprove,
       maxAgents: MAX_AGENT_INSTANCES,
-      agents: getOrchestratorAgents(),
+      model: pickOrchestratorModel(),
       send: orchestrateSend,
       availableAgents: getAgentsWithStatus().filter((a) => a.available).map((a) => a.id),
       createACPClient: async (agentType: string) => {
@@ -563,7 +591,10 @@ async function handleOrchestrate(
           if (truncateBuffer) inst.stderrBuffer = inst.stderrBuffer.slice(-5000);
         });
         client.setOnReadTextFile(async (params) => handleReadTextFile(params));
-        client.setOnWriteTextFile(async (params) => handleWriteTextFile(params));
+        client.setOnWriteTextFile(async (params) => {
+          writtenFiles.push(params.path);
+          return handleWriteTextFile(params);
+        });
         client.setOnCreateTerminal(async (params) => handleCreateTerminal(params));
         client.setOnTerminalOutput(async (params) => handleTerminalOutput(params));
         client.setOnWaitForTerminalExit(async (params) => handleWaitForTerminalExit(params));
@@ -591,6 +622,7 @@ async function handleOrchestrate(
         };
       },
       onSubtaskStart: (sessionId, subtask, _agentId) => {
+        subtaskTotal++;
         const key = sessionInstanceMap.get(sessionId);
         if (!key) return;
         const inst = sm.getSession(key);
@@ -606,20 +638,38 @@ async function handleOrchestrate(
         sm.sendInstanceList();
       },
       onSubtaskComplete: (sessionId, subtask, agentOutput) => {
+        subtaskCompleted++;
         const key = sessionInstanceMap.get(sessionId);
         if (!key) return;
         const inst = sm.getSession(key);
+        const agentId = inst?.agentType ?? "agent";
+
+        // Prefer the accumulated streamingText over agentOutput — the ACP
+        // sendMessage() return value may be a metadata object like
+        // { stopReason: "end_turn" } rather than the actual response text.
+        const fullText = (inst?.streamingText?.trim() || agentOutput).trim();
+
         if (inst) {
           inst.isStreaming = false;
           inst.streamingText = "";
         }
+
+        // Extract the last non-empty paragraph as the concise finding.
+        const paragraphs = fullText.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
+        const lastPara = paragraphs[paragraphs.length - 1] ?? fullText;
+        const finding = lastPara.length > 300 ? lastPara.slice(0, 300).trimEnd() + "…" : lastPara;
+        if (finding) subtaskFindings.push({ agentId, finding });
+
         send({ type: "streamEnd", instanceId: key, stopReason: "complete" });
-        sm.pushMessage(key, { from: "agent", text: agentOutput });
-        send({ type: "chatMessage", from: "agent", text: agentOutput, instanceId: key });
+        sm.pushMessage(key, { from: "agent", text: fullText || agentOutput });
+        send({ type: "chatMessage", from: "agent", text: fullText || agentOutput, instanceId: key });
         sm.sendInstanceList();
       },
+      onSubtaskFailed: (_sessionId, subtask, _agentId, reason) => {
+        subtaskFailures.push({ description: subtask.description, reason });
+      },
       onPendingApproval: (data) => {
-        pendingOrchestration = { ...data, config };
+        pendingOrchestration = { ...data, config, agents: data.agents };
       },
     };
 
@@ -644,16 +694,17 @@ async function handleOrchestrationApprove(approved: boolean): Promise<void> {
   }
 
   if (!approved) {
+    console.error("[eisen-host] Orchestration cancelled by user");
     send({ type: "state", state: "cancelled" });
     pendingOrchestration = null;
     return;
   }
 
-  const { config, assignments, context, cost, runId, runStart } = pendingOrchestration;
+  const { config, agents, assignments, context, cost, runId, runStart } = pendingOrchestration;
   pendingOrchestration = null;
 
   try {
-    await executeAndEvaluate(config, assignments, context, cost, runId, runStart);
+    await executeAndEvaluate(config, agents, assignments, context, cost, runId, runStart);
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     send({ type: "orchestrationError", message: msg });
@@ -666,6 +717,9 @@ async function handleOrchestrationApprove(approved: boolean): Promise<void> {
 
 async function handleMessage(message: Record<string, any>): Promise<void> {
   switch (message.type) {
+    // "chatMessage" is sent by the web UI; "sendMessage" is sent by the extension.
+    // Both route through the interceptor (which handles orchestration approval).
+    case "chatMessage":
     case "sendMessage":
       if (message.text || (message.contextChips && message.contextChips.length > 0)) {
         await sm.sendMessage(message.text || "", message.contextChips);
@@ -682,6 +736,8 @@ async function handleMessage(message: Record<string, any>): Promise<void> {
         await sm.spawnAgent(message.agentId);
       }
       break;
+    // "addAgent" is sent by the web UI; "spawnAgent" is sent by the extension.
+    case "addAgent":
     case "spawnAgent":
       if (message.agentType) {
         await sm.spawnAgent(message.agentType, message.sessionMode as SessionMode | undefined);
@@ -702,6 +758,12 @@ async function handleMessage(message: Record<string, any>): Promise<void> {
             message.contextChips,
           );
         }
+      }
+      break;
+    // "switchAgent" is sent by the web UI (with instanceId); "switchInstance" by the extension.
+    case "switchAgent":
+      if (message.instanceId) {
+        sm.switchToInstance(message.instanceId);
       }
       break;
     case "switchInstance":
@@ -745,6 +807,11 @@ async function handleMessage(message: Record<string, any>): Promise<void> {
       await sm.newChat();
       break;
     case "cancel": {
+      // If there is a pending orchestration approval, cancel it first.
+      if (pendingOrchestration) {
+        await handleOrchestrationApprove(false);
+        break;
+      }
       const active = sm.getActiveSession();
       if (active && !active.orchestratorKey) {
         await sm.cancel();

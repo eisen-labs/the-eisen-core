@@ -16,7 +16,8 @@
     "dev": "pnpm -C ui dev & pnpm -C extension dev",
     "clean": "pnpm -C ui clean && pnpm -C extension clean",
     "check": "pnpm exec biome check ui/src extension/src && pnpm -C ui exec tsc --noEmit && pnpm -C extension exec tsc --noEmit",
-    "prepare": "git config core.hooksPath .githooks"
+    "prepare": "git config core.hooksPath .githooks",
+    "optimize-prompts": "bun run app/host/scripts/optimize-prompts.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.15"
