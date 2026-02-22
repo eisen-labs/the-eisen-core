@@ -1,7 +1,49 @@
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::types::{Action, Delta, FileNode, SessionMode, Snapshot, TrackerConfig, UsageMessage};
+
+const IGNORED_DIRS: &[&str] = &[
+    "node_modules",
+    "dist",
+    "build",
+    "target",
+    ".git",
+    ".venv",
+    "__pycache__",
+    ".next",
+    ".nuxt",
+    "coverage",
+    ".turbo",
+    ".cache",
+    ".output",
+    "out",
+];
+
+fn is_ignored_segment(seg: &str) -> bool {
+    (seg.starts_with('.') && seg != ".." && seg != ".") || IGNORED_DIRS.contains(&seg)
+}
+
+fn normalize_path(raw: &str, workspace_root: Option<&Path>) -> Option<String> {
+    let p = Path::new(raw);
+    let relative = match workspace_root {
+        Some(root) if p.is_absolute() => p
+            .strip_prefix(root)
+            .ok()?
+            .to_string_lossy()
+            .replace('\\', "/"),
+        _ => raw.replace('\\', "/"),
+    };
+    let relative = relative.strip_prefix("./").unwrap_or(&relative);
+    if relative.is_empty() {
+        return None;
+    }
+    if relative.split('/').any(is_ignored_segment) {
+        return None;
+    }
+    Some(relative.to_string())
+}
 
 /// Current wall-clock time in milliseconds since Unix epoch.
 fn now_ms() -> u64 {
@@ -208,6 +250,7 @@ impl SessionTracker {
 pub struct ContextTracker {
     agent_id: String,
     default_session_id: Option<String>,
+    workspace_root: Option<PathBuf>,
     sessions: HashMap<String, SessionTracker>,
     config: TrackerConfig,
     pending_prompt_requests: HashMap<u64, String>,
@@ -219,11 +262,16 @@ impl ContextTracker {
         Self {
             agent_id: String::new(),
             default_session_id: None,
+            workspace_root: None,
             sessions: HashMap::new(),
             config,
             pending_prompt_requests: HashMap::new(),
             pending_terminal_output_ids: HashMap::new(),
         }
+    }
+
+    pub fn set_workspace_root(&mut self, root: PathBuf) {
+        self.workspace_root = Some(root);
     }
 
     /// Set the agent instance ID. Called from the `--agent-id` CLI flag.
@@ -310,7 +358,12 @@ impl ContextTracker {
     }
 
     pub fn file_access_for_session(&mut self, session_id: &str, path: &str, action: Action) {
-        self.ensure_session(session_id).file_access(path, action);
+        let normalized = match normalize_path(path, self.workspace_root.as_deref()) {
+            Some(p) => p,
+            None => return,
+        };
+        self.ensure_session(session_id)
+            .file_access(&normalized, action);
     }
 
     /// Record a token usage update from the agent.

@@ -1,20 +1,13 @@
 import { Chat } from "./components/chat";
-import { Inspect, type NodeMeta } from "./components/inspect";
+import { Inspect } from "./components/inspect";
+import { Preview } from "./components/preview";
 import { Toolbar } from "./components/toolbar";
 import { TopBar } from "./components/top-bar";
 import { el } from "./dom";
+import { applySelection, handleFileContent, hideTooltip, type SelectionContext, showTooltip } from "./graph-ui";
 import { Renderer } from "./render";
 import { Selection, type SelectionMode } from "./selection";
-import {
-  type AgentInfo,
-  applyDelta,
-  applySnapshot,
-  createState,
-  type Delta,
-  type Node,
-  type Snapshot,
-  type State,
-} from "./state";
+import { type AgentInfo, applyDelta, applySnapshot, createState, type Delta, type Snapshot, type State } from "./state";
 import type { Transport } from "./transport";
 import type { AvailableAgent, AvailableCommand, FileSearchResult, SessionMeta } from "./types";
 
@@ -27,13 +20,15 @@ class Eisen {
 
   private topBar: TopBar;
   private chat: Chat;
-  private inspect: Inspect;
   private selection: Selection;
+  private pendingLine: number | null = null;
+  private pendingHighlight: { start: number; end: number } | null = null;
 
   private root: HTMLElement;
   private left: HTMLElement;
   private right: HTMLElement;
-  private leftWidth = 340;
+  private ctx: SelectionContext;
+  private leftWidth = 240;
   private rightWidth = 280;
 
   constructor(transport: Transport) {
@@ -53,8 +48,8 @@ class Eisen {
     leftHandle.addEventListener("mousedown", (e) => this.startResize(e, "left"));
     this.left.append(leftHandle);
 
-    // Right panel (inspect)
-    this.right = el("div", { className: "panel panel-right" });
+    // Right column (inspect + preview)
+    this.right = el("div", { className: "right-col" });
     const rightHandle = el("div", { className: "resize-handle resize-right" });
     rightHandle.addEventListener("mousedown", (e) => this.startResize(e, "right"));
     this.right.append(rightHandle);
@@ -101,7 +96,25 @@ class Eisen {
       },
     });
 
-    this.inspect = new Inspect();
+    const inspect = new Inspect();
+    const preview = new Preview();
+    preview.onSave = (path, content) => {
+      this.transport.send({ type: "writeFile", path, content });
+    };
+
+    const tooltip = el("div", { className: "hover-tooltip" });
+    const tooltipInspect = new Inspect();
+    tooltip.append(tooltipInspect.el);
+
+    this.ctx = {
+      state: this.state,
+      inspect,
+      preview,
+      right: this.right,
+      tooltip,
+      tooltipInspect,
+      sendReadFile: (filePath) => this.transport.send({ type: "readFile", path: filePath }),
+    };
 
     const toolbar = new Toolbar({
       onView: () => {
@@ -126,23 +139,36 @@ class Eisen {
 
     header.append(this.topBar.el);
     this.left.append(this.chat.el);
-    this.right.append(this.inspect.el);
+    const inspectPanel = el("div", { className: "panel right-inspect" });
+    inspectPanel.append(inspect.el);
+    const previewPanel = el("div", { className: "panel right-preview" });
+    previewPanel.append(preview.el);
+    this.right.append(inspectPanel, previewPanel);
 
     const toolbarWrap = el("div", { className: "toolbar-anchor" });
     toolbarWrap.append(toolbar.el);
 
-    this.root.append(header, canvas, this.left, this.right, toolbarWrap);
+    this.root.append(header, canvas, this.left, this.right, tooltip, toolbarWrap);
     this.updateLayout();
 
     // Renderer + selection
     this.renderer = new Renderer(canvas, {
-      onHover: (id) => {
-        if (id) this.showInspect(id);
+      onHover: (id, sx, sy) => {
+        if (id && sx != null && sy != null) {
+          showTooltip(this.ctx, id, sx, sy);
+        } else {
+          hideTooltip(this.ctx);
+        }
       },
     });
 
     this.selection = new Selection(canvas, this.renderer.getGraph(), (ids) => {
-      this.applySelection(ids);
+      const result = applySelection(this.ctx, ids);
+      this.selectedId = result.selectedId;
+      this.selectedIds = result.selectedIds;
+      this.pendingLine = result.pendingLine;
+      this.pendingHighlight = result.pendingHighlight;
+      this.rerender();
     });
 
     this.transport.send({ type: "requestSnapshot" });
@@ -188,6 +214,7 @@ class Eisen {
   private bindEvents(): void {
     window.addEventListener("eisen:selectNode", ((e: CustomEvent<{ id: string | null; metaKey: boolean }>) => {
       const { id, metaKey } = e.detail;
+      hideTooltip(this.ctx);
       this.selection.handleClick(id ?? undefined, this.renderer.getDepsMode() ? false : metaKey);
       if (id && !metaKey && !this.renderer.getDepsMode()) this.renderer.zoomToNode(id);
     }) as EventListener);
@@ -213,42 +240,6 @@ class Eisen {
         r.setProperty("--fs-lg", s.lg);
       }
     });
-  }
-
-  private applySelection(ids: Set<string>): void {
-    this.selectedIds = new Set(ids);
-    if (ids.size === 0) {
-      this.selectedId = null;
-      this.inspect.hide();
-    } else {
-      const last = [...ids].pop() as string;
-      this.selectedId = last;
-      this.showInspect(last);
-    }
-    this.rerender();
-  }
-
-  private showInspect(id: string): void {
-    const node = this.state.nodes.get(id);
-    const meta: NodeMeta = { kind: this.deriveKind(id, node) };
-
-    if (node?.lines) meta.lines = `${node.lines.start}-${node.lines.end}`;
-    if (node?.tokens) meta.tokens = String(node.tokens);
-    if (node?.lastAction) meta.action = node.lastAction;
-
-    const agentNames: string[] = [];
-    if (node?.agentHeat) {
-      for (const name of Object.keys(node.agentHeat)) agentNames.push(name);
-    }
-    if (agentNames.length) meta.agents = agentNames.join(", ");
-
-    this.inspect.show(id, meta);
-  }
-
-  private deriveKind(id: string, node?: Node): string {
-    if (node?.kind) return node.kind;
-    if (!id.includes("::")) return id.includes(".") ? "file" : "folder";
-    return id.split("::").length === 2 ? "class" : "method";
   }
 
   private rerender(): void {
@@ -324,6 +315,24 @@ class Eisen {
         if (ac?.commands) this.chat.setCommands(ac.commands);
         return;
       }
+      case "fileContent": {
+        const fc = msg.params as { path?: string; content?: string; languageId?: string } | undefined;
+        if (fc?.path && typeof fc.content === "string") {
+          handleFileContent(
+            this.ctx.preview,
+            fc.path,
+            fc.content,
+            fc.languageId ?? "plaintext",
+            this.pendingLine,
+            this.pendingHighlight,
+          );
+          this.pendingLine = null;
+          this.pendingHighlight = null;
+        }
+        return;
+      }
+      case "fileSaved":
+        return;
       default:
         return;
     }
@@ -331,6 +340,7 @@ class Eisen {
   }
 
   destroy(): void {
+    this.ctx.preview.destroy();
     this.chat.destroy();
     this.selection.destroy();
     this.renderer.destroy();

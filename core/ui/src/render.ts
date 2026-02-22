@@ -20,11 +20,11 @@ import {
   getFolderStrokeReferenced,
   getFolderStrokeSelected,
   getNodeColor,
-  getNodeStroke,
   getRegionKey,
   nodeRadius,
   nodeVal,
   palette,
+  setPalette,
 } from "./theme";
 
 interface GraphNode {
@@ -96,6 +96,27 @@ const REGION_SPREAD_BY_KIND: Record<NodeKind, number> = {
   method: 0.5,
 };
 
+const IGNORED_DIRS = new Set([
+  "node_modules",
+  "dist",
+  "build",
+  "target",
+  ".git",
+  ".venv",
+  "__pycache__",
+  ".next",
+  ".nuxt",
+  "coverage",
+  ".turbo",
+  ".cache",
+  ".output",
+  "out",
+]);
+
+function isIgnoredPath(filePath: string): boolean {
+  return filePath.split("/").some((s) => (s.startsWith(".") && s !== ".." && s !== ".") || IGNORED_DIRS.has(s));
+}
+
 export class Renderer {
   private graph: Graph;
   private nodes: GraphNode[] = [];
@@ -139,6 +160,8 @@ export class Renderer {
     opts?: { onHover?: (id: string | null, screenX?: number, screenY?: number) => void },
   ) {
     this.onHoverCallback = opts?.onHover;
+    const theme = document.documentElement.getAttribute("data-theme");
+    if (theme === "light" || theme === "dark") setPalette(theme);
     this.graph = this.createGraph(container);
     this.bindPointerEvents(container);
     this.resizeObserver = new ResizeObserver(() => {
@@ -362,7 +385,7 @@ export class Renderer {
   }
 
   private createGraph(container: HTMLElement): Graph {
-    return (ForceGraph as unknown as (el: HTMLElement) => Graph)(container)
+    return (ForceGraph as unknown as () => (el: HTMLElement) => Graph)()(container)
       .autoPauseRedraw(false)
       .backgroundColor(palette.background)
       .maxZoom(2)
@@ -829,6 +852,11 @@ export class Renderer {
     }
   }
 
+  setTheme(mode: "dark" | "light"): void {
+    setPalette(mode);
+    this.graph.backgroundColor(palette.background);
+  }
+
   zoomToFit(): void {
     this.graph.zoomToFit(palette.zoom.fitDuration, palette.zoom.fitPadding);
   }
@@ -854,7 +882,8 @@ export class Renderer {
   }
 
   private drawNode(node: GraphNode, ctx: CanvasRenderingContext2D, scale: number): void {
-    const { id, kind, name: _name, inContext } = node;
+    const { id, kind } = node;
+    if (id === "") return;
     if (!this.isNodeVisible(id)) return;
     if (node.x == null || node.y == null) return;
 
@@ -863,7 +892,6 @@ export class Renderer {
     const r = nodeRadius(kind);
     const isSelected = this.selectedIds.has(id);
     const isCaller = this.callerIds.has(id);
-    const isListed = node.lastAction === "search";
     const isWritten = node.lastAction === "write";
     const alpha = this.nodeAlpha(id);
 
@@ -875,18 +903,11 @@ export class Renderer {
     ctx.fillStyle = getNodeColor(id, kind);
     ctx.fill();
 
-    if (kind !== "folder") {
-      const overlay = isWritten
-        ? palette.node.writeOverlay
-        : inContext && !isListed
-          ? palette.node.inContextOverlay
-          : null;
-      if (overlay) {
-        ctx.beginPath();
-        ctx.arc(x, y, r, 0, 2 * Math.PI);
-        ctx.fillStyle = overlay;
-        ctx.fill();
-      }
+    if (kind !== "folder" && isWritten) {
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, 2 * Math.PI);
+      ctx.fillStyle = palette.node.writeOverlay;
+      ctx.fill();
     }
 
     ctx.strokeStyle = isSelected
@@ -895,11 +916,17 @@ export class Renderer {
         ? palette.node.callerStroke
         : isWritten
           ? palette.node.writeStroke
-          : isListed
-            ? palette.node.stroke
-            : getNodeStroke(inContext);
+          : palette.node.stroke;
     ctx.lineWidth = (isSelected ? palette.node.selectedStrokeWidth : palette.node.strokeWidth) / scale;
     ctx.stroke();
+
+    if (isSelected) {
+      ctx.beginPath();
+      ctx.arc(x, y, r + palette.agent.ringOffset, 0, 2 * Math.PI);
+      ctx.strokeStyle = palette.node.selectedStroke;
+      ctx.lineWidth = palette.agent.ringWidth / scale;
+      ctx.stroke();
+    }
 
     // Draw agent attribution rings AFTER the node stroke so they aren't obscured
     if (node.agentHeat && Object.keys(node.agentHeat).length > 0 && this.agents.length > 0) {
@@ -910,6 +937,7 @@ export class Renderer {
   }
 
   private drawHitArea(node: GraphNode, color: string, ctx: CanvasRenderingContext2D): void {
+    if (node.id === "") return;
     if (!this.isNodeVisible(node.id)) return;
     if (node.x == null || node.y == null) return;
     const r = nodeRadius(node.kind);
@@ -993,7 +1021,6 @@ export class Renderer {
         parent = next;
       }
     }
-    ids.add("");
 
     return ids;
   }
@@ -1141,6 +1168,7 @@ export class Renderer {
     const folders = new Set<string>([""]);
     for (const id of state.nodes.keys()) {
       const pathPart = id.includes("::") ? id.slice(0, id.indexOf("::")) : id;
+      if (isIgnoredPath(pathPart)) continue;
       let dir = pathPart.split("/").slice(0, -1).join("/");
       while (dir !== "") {
         if (folders.has(dir)) break;
@@ -1155,12 +1183,16 @@ export class Renderer {
     let changed = false;
 
     for (const [id, node] of state.nodes) {
+      const filePart = id.includes("::") ? id.slice(0, id.indexOf("::")) : id;
+      if (isIgnoredPath(filePart)) continue;
       const { label, kind } = getNodeDisplayInfo(id, node.kind);
       const name = formatLabelWithLines(label, node.lines);
       const fileId = id.includes("::") ? id.slice(0, id.indexOf("::")) : id;
       const fileNode = fileId === id ? node : state.nodes.get(fileId);
       const inContext = node.inContext ?? fileNode?.inContext;
       const lastAction = node.lastAction ?? fileNode?.lastAction;
+      const agentHeat = node.agentHeat ?? fileNode?.agentHeat;
+      const agentContext = node.agentContext ?? fileNode?.agentContext;
       let gn = this.nodeMap.get(id);
 
       if (!gn) {
@@ -1170,8 +1202,8 @@ export class Renderer {
           kind,
           inContext,
           lastAction,
-          agentHeat: node.agentHeat,
-          agentContext: node.agentContext,
+          agentHeat,
+          agentContext,
           tokens: node.tokens,
         };
         this.nodes.push(gn);
@@ -1183,8 +1215,8 @@ export class Renderer {
           kind,
           inContext,
           lastAction,
-          agentHeat: node.agentHeat,
-          agentContext: node.agentContext,
+          agentHeat,
+          agentContext,
           tokens: node.tokens,
         });
       }

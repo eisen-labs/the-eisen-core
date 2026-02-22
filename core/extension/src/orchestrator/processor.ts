@@ -1,10 +1,6 @@
 import type { NormalizedAction, WireDelta, WireFileNode, WireNodeUpdate, WireSnapshot, WireUsage } from "./types";
 import { normalizeAction } from "./types";
 
-// ---------------------------------------------------------------------------
-// Processed output types — what processors return to the orchestrator
-// ---------------------------------------------------------------------------
-
 export interface ProcessedNodeUpdate {
   path: string;
   heat: number;
@@ -37,28 +33,12 @@ export interface ProcessedUsage {
   cost?: { amount: number; currency: string };
 }
 
-// ---------------------------------------------------------------------------
-// Abstract AgentProcessor
-// ---------------------------------------------------------------------------
-
 export abstract class AgentProcessor {
   abstract readonly agentType: string;
 
-  /**
-   * Process a raw snapshot from this agent's eisen-core.
-   * Returns normalized nodes ready for merging.
-   */
   abstract processSnapshot(snapshot: WireSnapshot): ProcessedSnapshot;
-
-  /**
-   * Process a raw delta from this agent's eisen-core.
-   * Returns normalized updates ready for merging.
-   */
   abstract processDelta(delta: WireDelta): ProcessedDelta;
 
-  /**
-   * Process usage messages. Override for agent-specific token accounting.
-   */
   processUsage(usage: WireUsage): ProcessedUsage {
     return {
       agentId: usage.agent_id,
@@ -69,10 +49,6 @@ export abstract class AgentProcessor {
     };
   }
 }
-
-// ---------------------------------------------------------------------------
-// Default normalization helpers
-// ---------------------------------------------------------------------------
 
 function normalizeFileNode(path: string, node: WireFileNode): ProcessedNodeUpdate {
   return {
@@ -95,10 +71,6 @@ function normalizeNodeUpdate(update: WireNodeUpdate): ProcessedNodeUpdate {
     timestampMs: update.timestamp_ms,
   };
 }
-
-// ---------------------------------------------------------------------------
-// DefaultProcessor — pass-through with normalization
-// ---------------------------------------------------------------------------
 
 export class DefaultProcessor extends AgentProcessor {
   readonly agentType: string;
@@ -140,16 +112,7 @@ export class DefaultProcessor extends AgentProcessor {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Processor registry
-// ---------------------------------------------------------------------------
-
-const PROCESSORS: Record<string, new (agentType: string) => AgentProcessor> = {
-  // All agents use DefaultProcessor for now.
-  // Agent-specific processors can be added here as needed:
-  // "claude-code": ClaudeCodeProcessor,
-  // "aider": AiderProcessor,
-};
+const PROCESSORS: Record<string, new (agentType: string) => AgentProcessor> = {};
 
 export function getProcessor(agentType: string): AgentProcessor {
   const Ctor = PROCESSORS[agentType];

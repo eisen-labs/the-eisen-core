@@ -9,30 +9,49 @@ export interface ToolbarCb {
   onDeps(): void;
 }
 
-const BUTTONS: Array<{ key: keyof ToolbarCb; icon: string; title: string }> = [
-  { key: "onView", icon: ICON.view, title: "Cycle view mode" },
-  { key: "onLayers", icon: ICON.layers, title: "Cycle region depth" },
-  { key: "onFit", icon: ICON.fit, title: "Fit view" },
-  { key: "onMarquee", icon: ICON.marquee, title: "Selection mode" },
-  { key: "onDeps", icon: ICON.deps, title: "Show deps" },
-];
-
 export class Toolbar {
   el: HTMLElement;
+  private marqueeBtn: HTMLElement;
+  private isLasso = false;
 
   constructor(cb: ToolbarCb) {
     this.el = el("div", { className: "toolbar glass" });
-    for (const b of BUTTONS) {
+
+    const left = el("div", { className: "toolbar-group" });
+
+    const mkBtn = (icon: string, title: string, onClick: () => void) => {
       const btn = el("button", {
         type: "button",
         className: "icon-btn",
         tabIndex: -1,
-        innerHTML: b.icon,
-        title: b.title,
-        "aria-label": b.title,
+        innerHTML: icon,
+        title,
+        "aria-label": title,
       });
-      btn.addEventListener("click", () => cb[b.key]());
-      this.el.append(btn);
-    }
+      btn.addEventListener("click", onClick);
+      return btn;
+    };
+
+    this.marqueeBtn = mkBtn(ICON.marquee, "Selection mode", () => {
+      cb.onMarquee();
+      this.isLasso = !this.isLasso;
+      this.marqueeBtn.innerHTML = this.isLasso ? ICON.lasso : ICON.marquee;
+      this.marqueeBtn.title = this.isLasso ? "Lasso select" : "Marquee select";
+    });
+
+    left.append(
+      mkBtn(ICON.view, "Cycle view mode", () => cb.onView()),
+      mkBtn(ICON.layers, "Cycle region depth", () => cb.onLayers()),
+      mkBtn(ICON.fit, "Fit view", () => cb.onFit()),
+      this.marqueeBtn,
+    );
+
+    const depsBtn = mkBtn(ICON.deps, "Show deps", () => {
+      depsBtn.classList.toggle("active");
+      cb.onDeps();
+    });
+
+    const sep = el("div", { className: "toolbar-sep" });
+    this.el.append(left, sep, depsBtn);
   }
 }

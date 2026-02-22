@@ -367,6 +367,7 @@ export interface ACPClientOptions {
   spawn?: SpawnFunction;
   skipAvailabilityCheck?: boolean;
   hostDir?: string;
+  cwd?: string;
 }
 
 export interface ACPSessionState {
@@ -395,6 +396,7 @@ export class ACPClient {
   private spawnFn: SpawnFunction;
   private skipAvailabilityCheck: boolean;
   private hostDir: string | null;
+  private cwd: string | null;
   private supportsEmbeddedContext = false;
 
   private _instanceId: string | null = null;
@@ -418,6 +420,7 @@ export class ACPClient {
     this.spawnFn = options?.spawn ?? (nodeSpawn as SpawnFunction);
     this.skipAvailabilityCheck = options?.skipAvailabilityCheck ?? false;
     this.hostDir = options?.hostDir ?? null;
+    this.cwd = options?.cwd ?? null;
   }
 
   get tcpPort(): number | null {
@@ -519,19 +522,18 @@ export class ACPClient {
         `[ACP] Generated instanceId="${this._instanceId}" for agent "${this.agentConfig.id}" (eisen-core at ${corePath})`,
       );
 
-      return {
-        command: corePath,
-        args: [
-          "observe",
-          "--port",
-          "0",
-          "--agent-id",
-          this._instanceId,
-          "--",
-          this.agentConfig.command,
-          ...this.agentConfig.args,
-        ],
-      };
+      const coreArgs = [
+        "observe",
+        "--port",
+        "0",
+        "--agent-id",
+        this._instanceId,
+      ];
+      if (this.cwd) {
+        coreArgs.push("--cwd", this.cwd);
+      }
+      coreArgs.push("--", this.agentConfig.command, ...this.agentConfig.args);
+      return { command: corePath, args: coreArgs };
     }
 
     return {

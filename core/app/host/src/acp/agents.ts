@@ -56,23 +56,19 @@ export function getAgent(id: string): AgentConfig | undefined {
   return AGENTS.find((a) => a.id === id);
 }
 
-export function getDefaultAgent(): AgentConfig {
-  const agent = getFirstAvailableAgent();
-  console.error(`[Eisen] Default agent selected: ${agent.name} (${agent.command})`);
-  return agent;
-}
+type LogFn = (msg: string, ...args: unknown[]) => void;
 
-function isCommandAvailableAsync(command: string): Promise<boolean> {
+function isCommandAvailableAsync(command: string, log: LogFn): Promise<boolean> {
   return new Promise((resolve) => {
     const whichCmd = process.platform === "win32" ? "where.exe" : "which";
     execFile(whichCmd, [command], { encoding: "utf8", timeout: 5000 }, (error, stdout) => {
       if (error) {
-        console.error(`[Eisen] Command "${command}" not available:`, error.message);
+        log(`[Eisen] Command "${command}" not available:`, error.message);
         resolve(false);
         return;
       }
       const isAvailable = stdout.trim().length > 0;
-      console.error(`[Eisen] Command "${command}" available:`, isAvailable, stdout.trim().split("\n")[0]);
+      log(`[Eisen] Command "${command}" available:`, isAvailable, stdout.trim().split("\n")[0]);
       resolve(isAvailable);
     });
   });
@@ -84,14 +80,24 @@ export interface AgentWithStatus extends AgentConfig {
 
 let cachedAgentsWithStatus: AgentWithStatus[] | null = null;
 let cachePromise: Promise<AgentWithStatus[]> | null = null;
+let _log: LogFn = console.error;
+
+export function setAgentLogger(log: LogFn): void {
+  _log = log;
+}
 
 export async function refreshAgentStatus(): Promise<AgentWithStatus[]> {
-  const results = await Promise.all(
-    AGENTS.map(async (agent) => ({
-      ...agent,
-      available: await isCommandAvailableAsync(agent.command),
-    })),
+  const uniqueCommands = [...new Set(AGENTS.map((a) => a.command))];
+  const availability = new Map<string, boolean>();
+  await Promise.all(
+    uniqueCommands.map(async (cmd) => {
+      availability.set(cmd, await isCommandAvailableAsync(cmd, _log));
+    }),
   );
+  const results = AGENTS.map((agent) => ({
+    ...agent,
+    available: availability.get(agent.command) ?? false,
+  }));
   cachedAgentsWithStatus = results;
   return results;
 }
@@ -100,15 +106,12 @@ export function getAgentsWithStatus(forceRefresh = false): AgentWithStatus[] {
   if (cachedAgentsWithStatus && !forceRefresh) {
     return cachedAgentsWithStatus;
   }
-  // Return cached or optimistic defaults (all unavailable) — caller should
-  // await ensureAgentStatusLoaded() for accurate results.
   if (!cachedAgentsWithStatus) {
     return AGENTS.map((agent) => ({ ...agent, available: false }));
   }
   return cachedAgentsWithStatus;
 }
 
-/** Ensure agent availability has been probed at least once. Safe to call repeatedly. */
 export async function ensureAgentStatusLoaded(): Promise<AgentWithStatus[]> {
   if (cachedAgentsWithStatus) return cachedAgentsWithStatus;
   if (!cachePromise) {
@@ -119,16 +122,21 @@ export async function ensureAgentStatusLoaded(): Promise<AgentWithStatus[]> {
   return cachePromise;
 }
 
+export function getDefaultAgent(): AgentConfig {
+  const agent = getFirstAvailableAgent();
+  _log(`[Eisen] Default agent selected: ${agent.name} (${agent.command})`);
+  return agent;
+}
+
 export function getFirstAvailableAgent(): AgentConfig {
   const agents = getAgentsWithStatus();
-  console.error("[Eisen] Agent availability:", agents.map((a) => `${a.name}: ${a.available}`).join(", "));
+  _log("[Eisen] Agent availability:", agents.map((a) => `${a.name}: ${a.available}`).join(", "));
   const available = agents.find((a) => a.available);
   if (!available) {
-    console.error("[Eisen] No agents available, falling back to opencode");
-    // Return opencode as fallback, but the caller should check isAgentAvailable first
+    _log("[Eisen] No agents available, falling back to opencode");
     return AGENTS[0];
   }
-  console.error(`[Eisen] First available agent: ${available.name}`);
+  _log(`[Eisen] First available agent: ${available.name}`);
   return available;
 }
 

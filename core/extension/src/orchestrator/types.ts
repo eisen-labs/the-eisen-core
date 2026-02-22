@@ -1,4 +1,4 @@
-// Wire protocol types — what eisen-core sends over TCP (snake_case JSON)
+// Wire protocol types -- what eisen-core sends over TCP (snake_case JSON)
 
 export interface WireFileNode {
   path: string;
@@ -22,7 +22,7 @@ export interface WireSnapshot {
   type: "snapshot";
   agent_id: string;
   session_id: string;
-  session_mode: "single_agent" | "orchestrator";
+  session_mode?: "single_agent" | "orchestrator";
   seq: number;
   nodes: Record<string, WireFileNode>;
 }
@@ -31,7 +31,7 @@ export interface WireDelta {
   type: "delta";
   agent_id: string;
   session_id: string;
-  session_mode: "single_agent" | "orchestrator";
+  session_mode?: "single_agent" | "orchestrator";
   seq: number;
   updates: WireNodeUpdate[];
   removed: string[];
@@ -41,13 +41,20 @@ export interface WireUsage {
   type: "usage";
   agent_id: string;
   session_id: string;
-  session_mode: "single_agent" | "orchestrator";
+  session_mode?: "single_agent" | "orchestrator";
   used: number;
   size: number;
   cost?: { amount: number; currency: string };
 }
 
-export type WireMessage = WireSnapshot | WireDelta | WireUsage;
+export interface RpcResult {
+  type: "rpc_result" | "rpc_error";
+  id: string;
+  result?: unknown;
+  error?: { code: number; message: string };
+}
+
+export type WireMessage = WireSnapshot | WireDelta | WireUsage | RpcResult;
 
 export type NormalizedAction = "read" | "write" | "search";
 

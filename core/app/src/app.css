@@ -1,0 +1,119 @@
+@import "../../ui/src/style.css";
+
+#app { width: 100%; height: 100%; position: relative; }
+
+/* Panel widths set via JS resize handles */
+
+/* Welcome */
+
+.welcome {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+.welcome-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+}
+
+.welcome-mark {
+  height: 48px;
+  width: auto;
+  color: var(--text);
+  overflow: hidden;
+}
+
+.welcome-mark path {
+  fill: transparent;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.welcome-mark.drawing path {
+  transition: stroke-dashoffset 1.2s ease-out;
+}
+
+.welcome-mark.drawn path {
+  transition: fill 0.4s ease, stroke-opacity 0.4s ease;
+  fill: currentColor;
+  stroke-opacity: 0;
+}
+
+.welcome-content {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-xs);
+  min-width: 200px;
+  opacity: 0;
+  transform: translateY(var(--space-md));
+  transition: opacity 0.5s ease, transform 0.5s ease;
+}
+
+.welcome-content.visible {
+  opacity: 1;
+  transform: none;
+}
+
+.welcome-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-md);
+  height: 28px;
+  padding: 0 var(--space-lg);
+  border-radius: var(--radius-sm);
+  border: none;
+  background: none;
+  font-size: var(--fs-md);
+  color: var(--text-2);
+  cursor: pointer;
+  transition: color 0.1s;
+}
+
+.welcome-btn:hover { color: var(--text); }
+
+.welcome-btn svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.recent-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.welcome-sep {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: var(--space-sm) auto;
+  width: 70%;
+}
+
+/* Error */
+
+.error-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-lg);
+  width: 100%;
+  height: 100%;
+  color: var(--text-3);
+}
+
+.error-label { font-size: var(--fs-xs); }
+
+.welcome-mark.animating path {
+  transition: stroke-dashoffset 1.6s linear;
+}

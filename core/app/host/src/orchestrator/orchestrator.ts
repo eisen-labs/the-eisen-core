@@ -1,4 +1,5 @@
 import * as net from "node:net";
+import * as path from "node:path";
 import { applyAgentUpdate, createMergedNode, removeAgentFromNode } from "./merge";
 import { type AgentProcessor, getProcessor } from "./processor";
 import type {
@@ -34,22 +35,61 @@ export class EisenOrchestrator {
   private connections = new Map<string, AgentConnection>();
   private mergedState = new Map<string, MergedFileNode>();
   private seq = 0;
+  private cwd: string;
 
   private typeCounters = new Map<string, number>();
   private nextColorIndex = 0;
+
+  constructor(cwd?: string) {
+    this.cwd = cwd ?? "";
+  }
+
+  private normalizeNodeId(rawId: string): string {
+    const [filePart, ...symbolParts] = rawId.split("::");
+    const file = this.toWorkspaceRelative(filePart);
+    if (!file) return "";
+    if (this.shouldIgnore(file)) return "";
+    return symbolParts.length === 0 ? file : `${file}::${symbolParts.join("::")}`;
+  }
+
+  private toWorkspaceRelative(filePath: string): string {
+    const normalized = filePath.replaceAll("\\", "/");
+    if (!this.cwd || !path.isAbsolute(filePath)) {
+      return normalized.replace(/^\.\//, "");
+    }
+    return path.relative(this.cwd, filePath).replaceAll(path.sep, "/").replace(/^\.\//, "");
+  }
+
+  private static IGNORED_DIRS = new Set([
+    "node_modules", "dist", "build", "target", ".git",
+    ".venv", "__pycache__", ".next", ".nuxt", "coverage",
+    ".turbo", ".cache", ".output", "out",
+  ]);
+
+  private shouldIgnore(id: string): boolean {
+    const file = id.includes("::") ? id.slice(0, id.indexOf("::")) : id;
+    return file.split("/").some((seg) =>
+      (seg.startsWith(".") && seg !== ".." && seg !== ".") || EisenOrchestrator.IGNORED_DIRS.has(seg),
+    );
+  }
 
   onMergedSnapshot: ((snapshot: MergedGraphSnapshot) => void) | null = null;
   onMergedDelta: ((delta: MergedGraphDelta) => void) | null = null;
   onAgentUpdate: ((agents: AgentInfo[]) => void) | null = null;
 
-  addAgent(instanceId: string, tcpPort: number, agentType: string): void {
+  addAgent(
+    instanceId: string,
+    tcpPort: number,
+    agentType: string,
+    opts?: { displayName?: string; color?: string },
+  ): void {
     if (this.connections.has(instanceId)) {
       console.warn(`[Orchestrator] Agent ${instanceId} already registered, skipping`);
       return;
     }
 
-    const displayName = this.allocateDisplayName(agentType);
-    const color = this.allocateColor();
+    const displayName = opts?.displayName ?? this.allocateDisplayName(agentType);
+    const color = opts?.color ?? this.allocateColor();
     const processor = getProcessor(agentType);
 
     const conn: AgentConnection = {
@@ -162,6 +202,12 @@ export class EisenOrchestrator {
     return this.connections.size;
   }
 
+  requestSnapshot(): void {
+    if (this.mergedState.size > 0) {
+      this.emitFullSnapshot();
+    }
+  }
+
   dispose(): void {
     for (const conn of this.connections.values()) {
       if (conn.socket) {
@@ -267,7 +313,9 @@ export class EisenOrchestrator {
       }
     }
 
-    for (const [path, update] of processed.nodes) {
+    for (const [rawPath, update] of processed.nodes) {
+      const nodeId = this.normalizeNodeId(rawPath);
+      if (!nodeId) continue;
       const agentState: AgentFileState = {
         heat: update.heat,
         inContext: update.inContext,
@@ -276,11 +324,11 @@ export class EisenOrchestrator {
         turnAccessed: update.turnAccessed,
       };
 
-      const existing = this.mergedState.get(path);
+      const existing = this.mergedState.get(nodeId);
       if (existing) {
         applyAgentUpdate(existing, conn.instanceId, agentState);
       } else {
-        this.mergedState.set(path, createMergedNode(path, conn.instanceId, agentState));
+        this.mergedState.set(nodeId, createMergedNode(nodeId, conn.instanceId, agentState));
       }
     }
 
@@ -302,6 +350,8 @@ export class EisenOrchestrator {
     const removedPaths: string[] = [];
 
     for (const update of processed.updates) {
+      const nodeId = this.normalizeNodeId(update.path);
+      if (!nodeId) continue;
       const agentState: AgentFileState = {
         heat: update.heat,
         inContext: update.inContext,
@@ -310,24 +360,26 @@ export class EisenOrchestrator {
         turnAccessed: update.turnAccessed,
       };
 
-      const existing = this.mergedState.get(update.path);
+      const existing = this.mergedState.get(nodeId);
       if (existing) {
         applyAgentUpdate(existing, conn.instanceId, agentState);
       } else {
-        this.mergedState.set(update.path, createMergedNode(update.path, conn.instanceId, agentState));
+        this.mergedState.set(nodeId, createMergedNode(nodeId, conn.instanceId, agentState));
       }
-      updatedPaths.push(update.path);
+      updatedPaths.push(nodeId);
     }
 
-    for (const path of processed.removed) {
-      const node = this.mergedState.get(path);
+    for (const rawPath of processed.removed) {
+      const nodeId = this.normalizeNodeId(rawPath);
+      if (!nodeId) continue;
+      const node = this.mergedState.get(nodeId);
       if (node) {
         const kept = removeAgentFromNode(node, conn.instanceId);
         if (!kept) {
-          this.mergedState.delete(path);
-          removedPaths.push(path);
+          this.mergedState.delete(nodeId);
+          removedPaths.push(nodeId);
         } else {
-          updatedPaths.push(path);
+          updatedPaths.push(nodeId);
         }
       }
     }

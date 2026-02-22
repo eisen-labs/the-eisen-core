@@ -27,3 +27,6 @@ tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-store = "2"
 eisen-core = { path = "../../core" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

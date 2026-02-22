@@ -22,7 +22,7 @@ export function drawLabelBubble(
   h: number,
   fill: string,
 ): void {
-  const radius = Math.min(h / 2, w / 2);
+  const radius = Math.min(h * 0.2, w * 0.2, 4);
   ctx.beginPath();
   ctx.roundRect(x, y, w, h, radius);
   ctx.fillStyle = fill;

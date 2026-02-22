@@ -2,7 +2,7 @@ import type { NormalizedAction, WireDelta, WireFileNode, WireNodeUpdate, WireSna
 import { normalizeAction } from "./types";
 
 // ---------------------------------------------------------------------------
-// Processed output types — what processors return to the orchestrator
+// Processed output types -- what processors return to the orchestrator
 // ---------------------------------------------------------------------------
 
 export interface ProcessedNodeUpdate {
@@ -44,21 +44,9 @@ export interface ProcessedUsage {
 export abstract class AgentProcessor {
   abstract readonly agentType: string;
 
-  /**
-   * Process a raw snapshot from this agent's eisen-core.
-   * Returns normalized nodes ready for merging.
-   */
   abstract processSnapshot(snapshot: WireSnapshot): ProcessedSnapshot;
-
-  /**
-   * Process a raw delta from this agent's eisen-core.
-   * Returns normalized updates ready for merging.
-   */
   abstract processDelta(delta: WireDelta): ProcessedDelta;
 
-  /**
-   * Process usage messages. Override for agent-specific token accounting.
-   */
   processUsage(usage: WireUsage): ProcessedUsage {
     return {
       agentId: usage.agent_id,
@@ -97,7 +85,7 @@ function normalizeNodeUpdate(update: WireNodeUpdate): ProcessedNodeUpdate {
 }
 
 // ---------------------------------------------------------------------------
-// DefaultProcessor — pass-through with normalization
+// DefaultProcessor -- pass-through with normalization
 // ---------------------------------------------------------------------------
 
 export class DefaultProcessor extends AgentProcessor {
@@ -144,12 +132,7 @@ export class DefaultProcessor extends AgentProcessor {
 // Processor registry
 // ---------------------------------------------------------------------------
 
-const PROCESSORS: Record<string, new (agentType: string) => AgentProcessor> = {
-  // All agents use DefaultProcessor for now.
-  // Agent-specific processors can be added here as needed:
-  // "claude-code": ClaudeCodeProcessor,
-  // "aider": AiderProcessor,
-};
+const PROCESSORS: Record<string, new (agentType: string) => AgentProcessor> = {};
 
 export function getProcessor(agentType: string): AgentProcessor {
   const Ctor = PROCESSORS[agentType];

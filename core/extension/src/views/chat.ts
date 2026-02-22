@@ -8,7 +8,6 @@ import type {
   ReadTextFileResponse,
   ReleaseTerminalRequest,
   ReleaseTerminalResponse,
-  SessionNotification,
   TerminalOutputRequest,
   TerminalOutputResponse,
   WaitForTerminalExitRequest,
@@ -19,33 +18,12 @@ import type {
 import { marked } from "marked";
 import * as vscode from "vscode";
 import { getAgent, getAgentsWithStatus, getDefaultAgent } from "../acp/agents";
-import { ACPClient, type ContextChipData } from "../acp/client";
+import { ACPClient } from "../acp/client";
+import type { SessionMode } from "../constants";
 import { FileSearchService } from "../fileSearchService";
-import { AGENT_COLORS } from "../orchestrator";
+import { createSessionManager, type SessionManager } from "../session-manager";
 
 marked.setOptions({ breaks: true, gfm: true });
-
-const SELECTED_AGENT_KEY = "eisen.selectedAgent";
-const SELECTED_MODE_KEY = "eisen.selectedMode";
-const SELECTED_MODEL_KEY = "eisen.selectedModel";
-
-/** Maximum number of concurrent agent instances to prevent resource exhaustion */
-const MAX_AGENT_INSTANCES = 10;
-
-// 2-letter abbreviations for agent types (used in tab labels)
-const AGENT_SHORT_NAMES: Record<string, string> = {
-  opencode: "op",
-  "claude-code": "cl",
-  codex: "cx",
-  gemini: "ge",
-  goose: "go",
-  amp: "am",
-  aider: "ai",
-};
-
-function agentShortName(agentType: string): string {
-  return AGENT_SHORT_NAMES[agentType] ?? agentType.slice(0, 2);
-}
 
 interface WebviewMessage {
   type:
@@ -79,23 +57,6 @@ interface WebviewMessage {
   }>;
 }
 
-type SessionMode = "single_agent" | "orchestrator";
-
-interface AgentInstance {
-  key: string; // "op1", "cl2" — the tab identity
-  agentType: string; // "opencode", "claude-code" — which agent config
-  label: string; // "op1", "cl2" — displayed on the tab
-  sessionMode: SessionMode;
-  client: ACPClient;
-  acpSessionId: string | null;
-  hasAcpSession: boolean;
-  hasRestoredModeModel: boolean;
-  stderrBuffer: string;
-  streamingText: string;
-  color: string; // from AGENT_COLORS palette
-  isStreaming: boolean; // true while sendMessage() is in flight
-}
-
 interface ManagedTerminal {
   id: string;
   proc: ReturnType<typeof spawn> | null;
@@ -108,187 +69,20 @@ interface ManagedTerminal {
   exitResolve: () => void;
 }
 
-export interface InstanceInfo {
-  key: string;
-  label: string;
-  agentType: string;
-  color: string;
-  connected: boolean;
-  isStreaming: boolean;
-}
-
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "eisen.chatView";
 
   private view?: vscode.WebviewView;
-  private globalState: vscode.Memento;
+  private sm: SessionManager;
   private terminals: Map<string, ManagedTerminal> = new Map();
   private terminalCounter = 0;
   private fileSearchService = new FileSearchService();
+  private connectedInstanceIds = new Set<string>();
 
+  // Extension-specific callbacks (used by graph webview, extension.ts)
   public onDidConnect: ((client: ACPClient) => void) | null = null;
   public onDidDisconnect: ((instanceId: string) => void) | null = null;
   public onActiveClientChanged: ((client: ACPClient) => void) | null = null;
-
-  private connectedInstanceIds = new Set<string>();
-  private agentInstances = new Map<string, AgentInstance>();
-  private currentInstanceKey: string | null = null;
-  private instanceCounters = new Map<string, number>();
-  private nextColorIndex = 0;
-
-  private get activeInstance(): AgentInstance | undefined {
-    return this.currentInstanceKey ? this.agentInstances.get(this.currentInstanceKey) : undefined;
-  }
-
-  private get activeClient(): ACPClient | null {
-    return this.activeInstance?.client ?? null;
-  }
-
-  private createInstance(agentType: string, sessionMode: SessionMode): AgentInstance {
-    if (this.agentInstances.size >= MAX_AGENT_INSTANCES) {
-      throw new Error(
-        `Maximum number of concurrent agents (${MAX_AGENT_INSTANCES}) reached. ` +
-          `Close an existing agent tab before spawning a new one.`,
-      );
-    }
-
-    const agent = getAgent(agentType);
-    if (!agent) {
-      throw new Error(`Unknown agent: ${agentType}`);
-    }
-
-    const count = (this.instanceCounters.get(agentType) ?? 0) + 1;
-    this.instanceCounters.set(agentType, count);
-    const short = agentShortName(agentType);
-    const key = `${short}${count}`;
-    const label = key;
-
-    const color = AGENT_COLORS[this.nextColorIndex % AGENT_COLORS.length];
-    this.nextColorIndex++;
-
-    const client = new ACPClient({
-      agentConfig: agent,
-      extensionUri: { fsPath: this.extensionUri.fsPath },
-    });
-
-    const instance: AgentInstance = {
-      key,
-      agentType,
-      label,
-      sessionMode,
-      client,
-      acpSessionId: null,
-      hasAcpSession: false,
-      hasRestoredModeModel: false,
-      stderrBuffer: "",
-      streamingText: "",
-      color,
-      isStreaming: false,
-    };
-
-    this.setupClientHandlers(client, key);
-    this.agentInstances.set(key, instance);
-    return instance;
-  }
-
-  private setupClientHandlers(client: ACPClient, instanceKey: string): void {
-    client.setOnStateChange((state) => {
-      const inst = this.agentInstances.get(instanceKey);
-      console.log(
-        `[Chat] Instance "${instanceKey}" (type=${inst?.agentType}) state -> "${state}" (instanceId=${client.instanceId}, isActive=${this.currentInstanceKey === instanceKey})`,
-      );
-
-      if (state === "connected") {
-        const instId = client.instanceId;
-        if (instId) {
-          this.connectedInstanceIds.add(instId);
-          console.log(`[Chat] Firing onDidConnect for instance "${instanceKey}" (instanceId=${instId})`);
-        }
-        this.onDidConnect?.(client);
-        this.sendInstanceList();
-      }
-      if (state === "disconnected") {
-        const instId = client.instanceId;
-        if (instId && this.connectedInstanceIds.has(instId)) {
-          this.connectedInstanceIds.delete(instId);
-          console.log(`[Chat] Firing onDidDisconnect for instance "${instanceKey}" (instanceId=${instId})`);
-          this.onDidDisconnect?.(instId);
-        }
-        this.sendInstanceList();
-      }
-
-      if (this.currentInstanceKey === instanceKey) {
-        this.postMessage({ type: "connectionState", state });
-      }
-    });
-
-    client.setOnSessionUpdate((update) => {
-      if (this.currentInstanceKey === instanceKey) {
-        this.handleSessionUpdate(update);
-      } else {
-        const bgInst = this.agentInstances.get(instanceKey);
-        if (
-          bgInst &&
-          update.update?.sessionUpdate === "agent_message_chunk" &&
-          update.update?.content?.type === "text"
-        ) {
-          bgInst.streamingText += update.update.content.text;
-        }
-      }
-    });
-
-    client.setOnStderr((text) => {
-      const inst = this.agentInstances.get(instanceKey);
-      if (inst) {
-        inst.stderrBuffer += text;
-      }
-      if (this.currentInstanceKey === instanceKey) {
-        this.handleStderr(text, instanceKey);
-      }
-    });
-
-    client.setOnReadTextFile(async (params: ReadTextFileRequest) => {
-      return this.handleReadTextFile(params);
-    });
-
-    client.setOnWriteTextFile(async (params: WriteTextFileRequest) => {
-      return this.handleWriteTextFile(params);
-    });
-
-    client.setOnCreateTerminal(async (params: CreateTerminalRequest) => {
-      return this.handleCreateTerminal(params);
-    });
-
-    client.setOnTerminalOutput(async (params: TerminalOutputRequest) => {
-      return this.handleTerminalOutput(params);
-    });
-
-    client.setOnWaitForTerminalExit(async (params: WaitForTerminalExitRequest) => {
-      return this.handleWaitForTerminalExit(params);
-    });
-
-    client.setOnKillTerminalCommand(async (params: KillTerminalCommandRequest) => {
-      return this.handleKillTerminalCommand(params);
-    });
-
-    client.setOnReleaseTerminal(async (params: ReleaseTerminalRequest) => {
-      return this.handleReleaseTerminal(params);
-    });
-  }
-
-  constructor(
-    private readonly extensionUri: vscode.Uri,
-    globalState: vscode.Memento,
-  ) {
-    this.globalState = globalState;
-
-    this.currentInstanceKey = null;
-  }
-
-  public getActiveClient(): ACPClient | null {
-    return this.activeClient;
-  }
-
   public onAgentResponse?: (response: { from: string; agent: string; text: string; instanceId?: string }) => void;
   public onStreamStart?: (instanceId: string) => void;
   public onStreamChunk?: (text: string, instanceId: string) => void;
@@ -296,37 +90,122 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   public onSessionMetadataChanged?: (meta: { modes?: unknown; models?: unknown }) => void;
   public onCommandsChanged?: (commands: Array<{ name: string; description?: string }>, instanceId?: string) => void;
 
-  private async ensureClientConnected(inst: AgentInstance): Promise<void> {
-    const state = inst.client.getState();
-    if (state === "connected") return;
-    if (state === "connecting") {
-      await new Promise<void>((resolve, reject) => {
-        const unsub = inst.client.setOnStateChange((s) => {
-          if (s === "connected") {
-            unsub();
-            resolve();
-          } else if (s === "disconnected") {
-            unsub();
-            reject(new Error("Connection failed"));
-          }
+  constructor(
+    private readonly extensionUri: vscode.Uri,
+    globalState: vscode.Memento,
+  ) {
+    this.sm = createSessionManager({
+      adapter: {
+        send: (msg) => {
+          this.view?.webview.postMessage(msg);
+          this.dispatchCallbacks(msg);
+        },
+        getWorkingDir: () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd(),
+        stateGet: <T>(key: string) => globalState.get<T>(key),
+        stateUpdate: (key, value) => globalState.update(key, value) as Promise<void>,
+        log: (msg) => console.log(msg),
+      },
+      handlers: {
+        readTextFile: (params) => this.handleReadTextFile(params),
+        writeTextFile: (params) => this.handleWriteTextFile(params),
+        createTerminal: (params) => this.handleCreateTerminal(params),
+        terminalOutput: (params) => this.handleTerminalOutput(params),
+        waitForTerminalExit: (params) => this.handleWaitForTerminalExit(params),
+        killTerminalCommand: (params) => this.handleKillTerminalCommand(params),
+        releaseTerminal: (params) => this.handleReleaseTerminal(params),
+      },
+      renderMarkdown: (text) => marked.parse(text) as string,
+      createACPClient: (agentType) => {
+        const agent = getAgent(agentType);
+        if (!agent) throw new Error(`Unknown agent: ${agentType}`);
+        return new ACPClient({
+          agentConfig: agent,
+          extensionUri: { fsPath: this.extensionUri.fsPath },
         });
-      });
-      return;
+      },
+      onInstanceConnected: (session) => {
+        const instId = session.client?.instanceId;
+        if (instId) this.connectedInstanceIds.add(instId);
+        if (session.client) this.onDidConnect?.(session.client as unknown as ACPClient);
+      },
+      onInstanceDisconnected: (session) => {
+        const instId = session.client?.instanceId;
+        if (instId && this.connectedInstanceIds.has(instId)) {
+          this.connectedInstanceIds.delete(instId);
+          this.onDidDisconnect?.(instId);
+        }
+      },
+      onStreamingChunk: (rawText, instanceKey) => {
+        const acpId = this.getAcpInstanceId(instanceKey);
+        if (acpId) this.onStreamChunk?.(rawText, acpId);
+      },
+      onStreamingComplete: (instanceKey, response) => {
+        const acpId = this.getAcpInstanceId(instanceKey);
+        if (acpId) this.onStreamEnd?.(acpId);
+        if (response.text) {
+          this.onAgentResponse?.({
+            from: "agent",
+            agent: response.label,
+            text: response.error ? `Error: ${response.error}` : response.text,
+            instanceId: acpId ?? undefined,
+          });
+        } else if (response.error) {
+          this.onAgentResponse?.({
+            from: "agent",
+            agent: response.label,
+            text: `Error: ${response.error}`,
+            instanceId: acpId ?? undefined,
+          });
+        }
+      },
+      onCommandsUpdate: (commands, instanceKey) => {
+        const acpId = this.getAcpInstanceId(instanceKey);
+        this.onCommandsChanged?.(commands as Array<{ name: string; description?: string }>, acpId ?? undefined);
+      },
+    });
+  }
+
+  private getAcpInstanceId(instanceKey: string): string | null {
+    const session = this.sm.getSession(instanceKey);
+    if (!session) return null;
+    return session.client?.instanceId ?? null;
+  }
+
+  private dispatchCallbacks(msg: Record<string, unknown>): void {
+    if (msg.type === "streamStart" && msg.instanceId) {
+      const acpId = this.getAcpInstanceId(msg.instanceId as string);
+      if (acpId) this.onStreamStart?.(acpId);
     }
-    await inst.client.connect();
+    if (msg.type === "instanceChanged" && msg.instanceKey) {
+      const session = this.sm.getSession(msg.instanceKey as string);
+      if (session?.client) {
+        this.onActiveClientChanged?.(session.client as unknown as ACPClient);
+      }
+    }
+    if (msg.type === "sessionMetadata") {
+      this.onSessionMetadataChanged?.({ modes: msg.modes, models: msg.models });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Public API (used by extension.ts and graph webview)
+  // ---------------------------------------------------------------------------
+
+  public getActiveClient(): ACPClient | null {
+    const session = this.sm.getActiveSession();
+    return (session?.client as unknown as ACPClient) ?? null;
   }
 
   public async spawnAndConnect(agentType?: string, sessionMode?: SessionMode): Promise<void> {
-    this.spawnAgent(agentType, sessionMode);
-    const inst = this.activeInstance;
-    if (inst) await this.ensureClientConnected(inst);
+    const type = agentType ?? getDefaultAgent().id;
+    await this.sm.spawnAgent(type, sessionMode ?? "single_agent");
   }
 
   public async sendFromGraph(
     text: string,
     contextChips?: Array<{ filePath: string; fileName: string; isDirectory?: boolean }>,
   ): Promise<void> {
-    return this.handleUserMessage(text, contextChips);
+    return this.sm.sendMessage(text, contextChips);
   }
 
   public async searchFiles(
@@ -338,27 +217,55 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   public switchToInstanceByInstanceId(instanceId: string): void {
-    for (const [key, inst] of this.agentInstances) {
-      if (inst.client.instanceId === instanceId) {
-        this.switchToInstance(key);
+    for (const [key, session] of this.sm.getSessions()) {
+      if (session.client?.instanceId === instanceId) {
+        this.sm.switchToInstance(key);
         return;
       }
     }
   }
 
   public async handleGraphModeChange(modeId: string): Promise<void> {
-    return this.handleModeChange(modeId);
+    return this.sm.setMode(modeId);
   }
 
   public async handleGraphModelChange(modelId: string): Promise<void> {
-    return this.handleModelChange(modelId);
+    return this.sm.setModel(modelId);
   }
 
   public getActiveSessionMetadata(): { modes?: unknown; models?: unknown } | null {
-    const inst = this.activeInstance;
-    if (!inst) return null;
-    return inst.client.getSessionMetadata(inst.acpSessionId ?? undefined) ?? null;
+    const session = this.sm.getActiveSession();
+    if (!session?.client) return null;
+    return session.client.getSessionMetadata(session.acpSessionId ?? undefined) ?? null;
   }
+
+  public async newChat(): Promise<void> {
+    await this.sm.resetChat();
+  }
+
+  public async spawnAgent(agentType?: string, sessionMode?: SessionMode): Promise<void> {
+    const type = agentType ?? getDefaultAgent().id;
+    await this.sm.spawnAgent(type, sessionMode ?? "single_agent");
+  }
+
+  public clearChat(): void {
+    this.view?.webview.postMessage({ type: "triggerClearChat" });
+  }
+
+  public postChipToWebview(chip: {
+    id: string;
+    filePath: string;
+    fileName: string;
+    languageId: string;
+    range?: { startLine: number; endLine: number };
+  }): void {
+    this.view?.webview.postMessage({ type: "addContextChipFromEditor", chip });
+    this.view?.webview.postMessage({ type: "focusChatInput" });
+  }
+
+  // ---------------------------------------------------------------------------
+  // WebviewViewProvider
+  // ---------------------------------------------------------------------------
 
   resolveWebviewView(
     webviewView: vscode.WebviewView,
@@ -378,236 +285,73 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       switch (message.type) {
         case "sendMessage":
           if (message.text || (message.contextChips && message.contextChips.length > 0)) {
-            await this.handleUserMessage(message.text || "", message.contextChips);
+            await this.sm.sendMessage(message.text || "", message.contextChips);
           }
           break;
         case "fileSearch":
           if (message.query !== undefined) {
             const results = await this.fileSearchService.search(message.query);
-            this.postMessage({
-              type: "fileSearchResults",
-              searchResults: results,
-            });
+            this.view?.webview.postMessage({ type: "fileSearchResults", searchResults: results });
           }
           break;
         case "selectAgent":
-          // Legacy: when agent selector dropdown is used, spawn a new instance of that type
-          if (message.agentId) {
-            this.handleSpawnAgent(message.agentId);
-          }
+          if (message.agentId) await this.sm.spawnAgent(message.agentId);
           break;
         case "spawnAgent":
-          if (message.agentType) {
-            this.handleSpawnAgent(message.agentType, message.sessionMode);
-          }
+          if (message.agentType) await this.sm.spawnAgent(message.agentType, message.sessionMode);
           break;
         case "switchInstance":
-          if (message.instanceKey) {
-            this.switchToInstance(message.instanceKey);
-          }
+          if (message.instanceKey) this.sm.switchToInstance(message.instanceKey);
           break;
         case "closeInstance":
-          if (message.instanceKey) {
-            this.handleCloseInstance(message.instanceKey);
-          }
+          if (message.instanceKey) this.sm.closeInstance(message.instanceKey);
           break;
         case "selectMode":
-          if (message.modeId) {
-            await this.handleModeChange(message.modeId);
-          }
+          if (message.modeId) await this.sm.setMode(message.modeId);
           break;
         case "selectModel":
-          if (message.modelId) {
-            await this.handleModelChange(message.modelId);
-          }
+          if (message.modelId) await this.sm.setModel(message.modelId);
           break;
         case "connect":
-          await this.handleConnect();
+          await this.sm.connect();
           break;
         case "newChat":
-          await this.handleNewChat();
+          await this.sm.resetChat();
           break;
         case "cancel":
-          await this.activeClient?.cancel();
+          await this.sm.cancel();
           break;
         case "clearChat":
-          this.handleClearChat();
+          this.sm.clearChat();
           break;
         case "copyMessage":
-          if (message.text) {
-            await vscode.env.clipboard.writeText(message.text);
-          }
+          if (message.text) await vscode.env.clipboard.writeText(message.text);
           break;
         case "ready": {
-          // Send current connection state
-          if (this.activeClient) {
-            this.postMessage({
-              type: "connectionState",
-              state: this.activeClient.getState(),
-            });
+          const activeSession = this.sm.getActiveSession();
+          if (activeSession?.client) {
+            this.view?.webview.postMessage({ type: "connectionState", state: activeSession.client.getState() });
           }
-          // Send agent list for the spawn dropdown
           const agentsWithStatus = getAgentsWithStatus();
-          this.postMessage({
+          this.view?.webview.postMessage({
             type: "agents",
-            agents: agentsWithStatus.map((a) => ({
-              id: a.id,
-              name: a.name,
-              available: a.available,
-            })),
-            selected: this.activeInstance?.agentType ?? null,
+            agents: agentsWithStatus.map((a) => ({ id: a.id, name: a.name, available: a.available })),
+            selected: activeSession?.agentType ?? null,
           });
-          // Send instance list for the tab bar (includes isStreaming per instance)
-          this.sendInstanceList();
-          // Send streaming state for the active instance so webview can sync stop button
-          if (this.activeInstance) {
-            this.postMessage({
-              type: "streamingState",
-              isStreaming: this.activeInstance.isStreaming,
-            });
+          this.sm.sendInstanceList();
+          if (activeSession) {
+            this.view?.webview.postMessage({ type: "streamingState", isStreaming: activeSession.isStreaming });
           }
-          // Send session metadata
-          this.sendSessionMetadata();
+          this.sm.sendSessionMetadata();
           break;
         }
       }
     });
   }
 
-  private switchToInstance(instanceKey: string): void {
-    if (instanceKey === this.currentInstanceKey) return;
-    const target = this.agentInstances.get(instanceKey);
-    if (!target) return;
-
-    this.currentInstanceKey = instanceKey;
-    this.globalState.update(SELECTED_AGENT_KEY, target.agentType);
-
-    this.onActiveClientChanged?.(target.client);
-
-    this.postMessage({
-      type: "instanceChanged",
-      instanceKey,
-      isStreaming: target.isStreaming,
-    });
-    this.postMessage({
-      type: "connectionState",
-      state: target.client.getState(),
-    });
-    this.sendInstanceList();
-
-    if (target.client.isConnected()) {
-      this.sendSessionMetadata();
-    } else {
-      this.postMessage({ type: "sessionMetadata", modes: null, models: null });
-    }
-  }
-
-  private handleSpawnAgent(agentType: string, sessionMode: SessionMode = "single_agent"): void {
-    const agent = getAgent(agentType);
-    if (!agent) return;
-
-    try {
-      const instance = this.createInstance(agentType, sessionMode);
-      this.switchToInstance(instance.key);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to spawn agent";
-      this.postMessage({ type: "error", text: message });
-    }
-  }
-
-  private handleCloseInstance(instanceKey: string): void {
-    const instance = this.agentInstances.get(instanceKey);
-    if (!instance) return;
-
-    const instId = instance.client.instanceId;
-    try {
-      instance.client.dispose();
-    } catch {}
-
-    if (instId && this.connectedInstanceIds.has(instId)) {
-      this.connectedInstanceIds.delete(instId);
-      this.onDidDisconnect?.(instId);
-    }
-
-    this.agentInstances.delete(instanceKey);
-
-    if (this.currentInstanceKey === instanceKey) {
-      const remaining = Array.from(this.agentInstances.keys());
-      if (remaining.length > 0) {
-        this.switchToInstance(remaining[remaining.length - 1]);
-      } else {
-        this.currentInstanceKey = null;
-        this.instanceCounters.clear();
-        this.nextColorIndex = 0;
-        this.postMessage({
-          type: "instanceChanged",
-          instanceKey: null,
-          isStreaming: false,
-        });
-      }
-    }
-
-    this.sendInstanceList();
-  }
-
-  private getInstanceList(): InstanceInfo[] {
-    const list: InstanceInfo[] = [];
-    for (const inst of this.agentInstances.values()) {
-      list.push({
-        key: inst.key,
-        label: inst.label,
-        agentType: inst.agentType,
-        color: inst.color,
-        connected: inst.client.isConnected(),
-        isStreaming: inst.isStreaming,
-      });
-    }
-    return list;
-  }
-
-  private sendInstanceList(): void {
-    this.postMessage({
-      type: "instanceList",
-      instances: this.getInstanceList(),
-      currentInstanceKey: this.currentInstanceKey,
-    });
-  }
-
-  public async newChat(): Promise<void> {
-    await this.handleNewChat();
-  }
-
-  public spawnAgent(agentType?: string, sessionMode?: SessionMode): void {
-    const type = agentType ?? getDefaultAgent().id;
-    this.handleSpawnAgent(type, sessionMode ?? "single_agent");
-  }
-
-  public clearChat(): void {
-    this.postMessage({ type: "triggerClearChat" });
-  }
-
-  private handleStderr(_text: string, instanceKey: string): void {
-    const inst = this.agentInstances.get(instanceKey);
-    if (!inst) return;
-    const errorMatch = inst.stderrBuffer.match(/(\w+Error):\s*(\w+)?\s*\n?\s*data:\s*\{([^}]+)\}/);
-    if (errorMatch) {
-      const errorType = errorMatch[1];
-      const errorData = errorMatch[3];
-      const providerMatch = errorData.match(/providerID:\s*"([^"]+)"/);
-      const modelMatch = errorData.match(/modelID:\s*"([^"]+)"/);
-      let message = `Agent error: ${errorType}`;
-      if (providerMatch && modelMatch) {
-        message = `Model not found: ${providerMatch[1]}/${modelMatch[1]}`;
-      }
-      if (this.currentInstanceKey === instanceKey) {
-        this.postMessage({ type: "agentError", text: message });
-      }
-      inst.stderrBuffer = "";
-    }
-    if (inst.stderrBuffer.length > 10000) {
-      inst.stderrBuffer = inst.stderrBuffer.slice(-5000);
-    }
-  }
+  // ---------------------------------------------------------------------------
+  // File I/O handlers (VSCode-specific)
+  // ---------------------------------------------------------------------------
 
   private async handleReadTextFile(params: ReadTextFileRequest): Promise<ReadTextFileResponse> {
     try {
@@ -645,6 +389,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Terminal handlers (VSCode-specific)
+  // ---------------------------------------------------------------------------
+
   private async handleCreateTerminal(params: CreateTerminalRequest): Promise<CreateTerminalResponse> {
     const terminalId = `term-${++this.terminalCounter}-${Date.now()}`;
     let exitResolve: () => void = () => {};
@@ -667,10 +415,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const workspaceCwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     const cwd = params.cwd && params.cwd.trim() !== "" ? params.cwd : workspaceCwd || process.env.HOME || process.cwd();
 
-    // Use shell only when no explicit args are provided (command may be a
-    // shell expression like "echo foo && bar"). When args are present the
-    // command is a concrete executable and shell: false avoids spawning an
-    // extra /bin/sh process per terminal command, reducing process pressure.
     const useShell = !params.args || params.args.length === 0;
     const proc = spawn(params.command, params.args || [], {
       cwd,
@@ -722,46 +466,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private async handleTerminalOutput(params: TerminalOutputRequest): Promise<TerminalOutputResponse> {
     const terminal = this.terminals.get(params.terminalId);
-    if (!terminal) {
-      throw new Error(`Terminal not found: ${params.terminalId}`);
-    }
+    if (!terminal) throw new Error(`Terminal not found: ${params.terminalId}`);
     const exitStatus =
       terminal.exitCode !== null
-        ? {
-            exitCode: terminal.exitCode,
-            ...(terminal.signal !== null && { signal: terminal.signal }),
-          }
+        ? { exitCode: terminal.exitCode, ...(terminal.signal !== null && { signal: terminal.signal }) }
         : null;
-    return {
-      output: terminal.output,
-      truncated: terminal.truncated,
-      exitStatus,
-    };
+    return { output: terminal.output, truncated: terminal.truncated, exitStatus };
   }
 
   private async handleWaitForTerminalExit(params: WaitForTerminalExitRequest): Promise<WaitForTerminalExitResponse> {
     const terminal = this.terminals.get(params.terminalId);
-    if (!terminal) {
-      throw new Error(`Terminal not found: ${params.terminalId}`);
-    }
+    if (!terminal) throw new Error(`Terminal not found: ${params.terminalId}`);
     await terminal.exitPromise;
-    return {
-      exitCode: terminal.exitCode,
-      ...(terminal.signal !== null && { signal: terminal.signal }),
-    };
+    return { exitCode: terminal.exitCode, ...(terminal.signal !== null && { signal: terminal.signal }) };
   }
 
   private async handleKillTerminalCommand(params: KillTerminalCommandRequest): Promise<KillTerminalCommandResponse> {
     const terminal = this.terminals.get(params.terminalId);
-    if (!terminal) {
-      throw new Error(`Terminal not found: ${params.terminalId}`);
-    }
+    if (!terminal) throw new Error(`Terminal not found: ${params.terminalId}`);
     if (terminal.proc && !terminal.proc.killed) {
       try {
         terminal.proc.kill();
       } catch {}
     }
-
     return {};
   }
 
@@ -773,10 +500,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         terminal.proc.kill();
       } catch {}
     }
-
     this.terminals.delete(params.terminalId);
     return {};
   }
+
+  // ---------------------------------------------------------------------------
+  // Disposal
+  // ---------------------------------------------------------------------------
 
   public dispose(): void {
     for (const terminal of this.terminals.values()) {
@@ -787,316 +517,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     }
     this.terminals.clear();
-
-    for (const inst of this.agentInstances.values()) {
-      try {
-        inst.client.dispose();
-      } catch {}
-    }
-    this.agentInstances.clear();
-    this.currentInstanceKey = null;
+    this.sm.dispose();
     this.fileSearchService.dispose();
   }
 
-  private handleSessionUpdate(notification: SessionNotification): void {
-    const update = notification.update;
-    const inst = this.activeInstance;
-
-    if (update.sessionUpdate === "agent_message_chunk") {
-      if (update.content.type === "text") {
-        if (inst) inst.streamingText += update.content.text;
-        this.postMessage({ type: "streamChunk", text: update.content.text });
-        if (inst?.client.instanceId) this.onStreamChunk?.(update.content.text, inst.client.instanceId);
-      }
-    } else if (update.sessionUpdate === "tool_call") {
-      this.postMessage({
-        type: "toolCallStart",
-        name: update.title,
-        toolCallId: update.toolCallId,
-        kind: update.kind,
-      });
-    } else if (update.sessionUpdate === "tool_call_update") {
-      if (update.status === "completed" || update.status === "failed") {
-        let terminalOutput: string | undefined;
-        let terminalId: string | undefined;
-        if (update.content && update.content.length > 0) {
-          const terminalContent = update.content.find((c: { type: string }) => c.type === "terminal");
-          if (terminalContent && "terminalId" in terminalContent) {
-            terminalId = String(terminalContent.terminalId);
-            terminalOutput = `[Terminal: ${terminalId}]`;
-          }
-        }
-        this.postMessage({
-          type: "toolCallComplete",
-          toolCallId: update.toolCallId,
-          title: update.title,
-          kind: update.kind,
-          content: update.content,
-          rawInput: update.rawInput,
-          rawOutput: update.rawOutput,
-          status: update.status,
-          terminalOutput,
-        });
-      }
-    } else if (update.sessionUpdate === "current_mode_update") {
-      this.postMessage({ type: "modeUpdate", modeId: update.currentModeId });
-    } else if (update.sessionUpdate === "available_commands_update") {
-      this.postMessage({
-        type: "availableCommands",
-        commands: update.availableCommands,
-      });
-      const inst = this.activeInstance;
-      if (update.availableCommands) {
-        this.onCommandsChanged?.(update.availableCommands, inst?.client.instanceId ?? undefined);
-      }
-    } else if (update.sessionUpdate === "plan") {
-      this.postMessage({ type: "plan", plan: { entries: update.entries } });
-    } else if (update.sessionUpdate === "agent_thought_chunk") {
-      if (update.content?.type === "text") {
-        this.postMessage({ type: "thoughtChunk", text: update.content.text });
-      }
-    } else if (update.sessionUpdate === "usage_update") {
-      this.postMessage({
-        type: "usageUpdate",
-        used: update.used,
-        size: update.size,
-        cost: update.cost,
-      });
-    }
-  }
-
-  private async handleUserMessage(
-    text: string,
-    contextChips?: Array<{
-      filePath: string;
-      fileName: string;
-      isDirectory?: boolean;
-      range?: { startLine: number; endLine: number };
-    }>,
-  ): Promise<void> {
-    const inst = this.activeInstance;
-    if (!inst) return;
-
-    const chipNames = contextChips?.map((c) => {
-      const name = c.fileName;
-      if (c.isDirectory) return `${name}/`;
-      return c.range ? `${name}:${c.range.startLine}-${c.range.endLine}` : name;
-    });
-    this.postMessage({
-      type: "userMessage",
-      text,
-      contextChipNames: chipNames,
-    });
-
-    try {
-      await this.ensureClientConnected(inst);
-
-      if (!inst.hasAcpSession) {
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        const workingDir = workspaceFolder?.uri.fsPath || process.cwd();
-        const resp = await inst.client.newSession(workingDir);
-        inst.acpSessionId = resp.sessionId;
-        inst.hasAcpSession = true;
-        this.sendSessionMetadata();
-      } else if (inst.acpSessionId) {
-        inst.client.setActiveSession(inst.acpSessionId);
-      }
-
-      inst.streamingText = "";
-      inst.stderrBuffer = "";
-      inst.isStreaming = true;
-      this.postMessage({ type: "streamStart" });
-      if (inst.client.instanceId) this.onStreamStart?.(inst.client.instanceId);
-
-      const chipData: ContextChipData[] | undefined = contextChips?.map((c) => ({
-        filePath: c.filePath,
-        fileName: c.fileName,
-        isDirectory: c.isDirectory,
-        range: c.range,
-      }));
-      const response = await inst.client.sendMessage(text, chipData);
-
-      inst.isStreaming = false;
-      if (inst.streamingText.length === 0) {
-        this.postMessage({
-          type: "error",
-          text: "Agent returned no response.",
-        });
-        this.postMessage({ type: "streamEnd", stopReason: "error", html: "" });
-      } else {
-        const renderedHtml = marked.parse(inst.streamingText) as string;
-        this.postMessage({
-          type: "streamEnd",
-          stopReason: response.stopReason,
-          html: renderedHtml,
-        });
-        this.onAgentResponse?.({
-          from: "agent",
-          agent: inst.label,
-          text: inst.streamingText,
-          instanceId: inst.client.instanceId ?? undefined,
-        });
-      }
-      if (inst.client.instanceId) this.onStreamEnd?.(inst.client.instanceId);
-      inst.streamingText = "";
-    } catch (error) {
-      inst.isStreaming = false;
-      const errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
-      this.postMessage({ type: "error", text: `Error: ${errorMessage}` });
-      this.onAgentResponse?.({
-        from: "agent",
-        agent: inst.label,
-        text: `Error: ${errorMessage}`,
-        instanceId: inst.client.instanceId ?? undefined,
-      });
-      this.postMessage({ type: "streamEnd", stopReason: "error", html: "" });
-      if (inst.client.instanceId) this.onStreamEnd?.(inst.client.instanceId);
-      inst.streamingText = "";
-      inst.stderrBuffer = "";
-    }
-  }
-
-  private async handleModeChange(modeId: string): Promise<void> {
-    const inst = this.activeInstance;
-    if (!inst) return;
-    try {
-      await inst.client.setMode(modeId);
-      const key = `${SELECTED_MODE_KEY}.${inst.agentType}`;
-      await this.globalState.update(key, modeId);
-      this.sendSessionMetadata();
-    } catch (error) {
-      console.error("[Chat] Failed to set mode:", error);
-    }
-  }
-
-  private async handleModelChange(modelId: string): Promise<void> {
-    const inst = this.activeInstance;
-    if (!inst) return;
-    try {
-      await inst.client.setModel(modelId);
-      const key = `${SELECTED_MODEL_KEY}.${inst.agentType}`;
-      await this.globalState.update(key, modelId);
-      this.sendSessionMetadata();
-    } catch (error) {
-      console.error("[Chat] Failed to set model:", error);
-    }
-  }
-
-  private async handleConnect(): Promise<void> {
-    const inst = this.activeInstance;
-    if (!inst) return;
-    try {
-      await this.ensureClientConnected(inst);
-      if (!inst.hasAcpSession) {
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        const workingDir = workspaceFolder?.uri.fsPath || process.cwd();
-        const resp = await inst.client.newSession(workingDir);
-        inst.acpSessionId = resp.sessionId;
-        inst.hasAcpSession = true;
-        this.sendSessionMetadata();
-      }
-    } catch (error) {
-      this.postMessage({
-        type: "error",
-        text: error instanceof Error ? error.message : "Failed to connect",
-      });
-    }
-  }
-
-  private async handleNewChat(): Promise<void> {
-    const inst = this.activeInstance;
-    if (!inst) return;
-
-    inst.acpSessionId = null;
-    inst.hasAcpSession = false;
-    inst.hasRestoredModeModel = false;
-    inst.streamingText = "";
-
-    this.postMessage({ type: "chatCleared" });
-    this.postMessage({ type: "sessionMetadata", modes: null, models: null });
-
-    try {
-      if (inst.client.isConnected()) {
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        const workingDir = workspaceFolder?.uri.fsPath || process.cwd();
-        const resp = await inst.client.newSession(workingDir);
-        inst.acpSessionId = resp.sessionId;
-        inst.hasAcpSession = true;
-        this.sendSessionMetadata();
-      }
-    } catch (error) {
-      console.error("[Chat] Failed to create new session:", error);
-    }
-  }
-
-  private handleClearChat(): void {
-    this.postMessage({ type: "chatCleared" });
-  }
-
-  private sendSessionMetadata(): void {
-    const inst = this.activeInstance;
-    if (!inst) return;
-    const metadata = inst.client.getSessionMetadata(inst.acpSessionId ?? undefined);
-    const meta = {
-      modes: metadata?.modes ?? null,
-      models: metadata?.models ?? null,
-      commands: metadata?.commands ?? null,
-    };
-    this.postMessage({ type: "sessionMetadata", ...meta });
-    this.onSessionMetadataChanged?.(meta);
-
-    if (!inst.hasRestoredModeModel && inst.hasAcpSession) {
-      inst.hasRestoredModeModel = true;
-      this.restoreSavedModeAndModel().catch((error) =>
-        console.warn("[Chat] Failed to restore saved mode/model:", error),
-      );
-    }
-  }
-
-  private async restoreSavedModeAndModel(): Promise<void> {
-    const inst = this.activeInstance;
-    if (!inst) return;
-    const metadata = inst.client.getSessionMetadata();
-    const availableModes = Array.isArray(metadata?.modes?.availableModes) ? metadata.modes.availableModes : [];
-    const availableModels = Array.isArray(metadata?.models?.availableModels) ? metadata.models.availableModels : [];
-
-    const modeKey = `${SELECTED_MODE_KEY}.${inst.agentType}`;
-    const modelKey = `${SELECTED_MODEL_KEY}.${inst.agentType}`;
-    const savedModeId = this.globalState.get<string>(modeKey);
-    const savedModelId = this.globalState.get<string>(modelKey);
-
-    let modeRestored = false;
-    let modelRestored = false;
-
-    if (savedModeId && availableModes.some((m: Record<string, unknown>) => m?.id === savedModeId)) {
-      await inst.client.setMode(savedModeId);
-      modeRestored = true;
-    }
-
-    if (savedModelId && availableModels.some((m: Record<string, unknown>) => m?.modelId === savedModelId)) {
-      await inst.client.setModel(savedModelId);
-      modelRestored = true;
-    }
-
-    if (modeRestored || modelRestored) {
-      this.postMessage({ type: "sessionMetadata", ...metadata });
-    }
-  }
-
-  public postChipToWebview(chip: {
-    id: string;
-    filePath: string;
-    fileName: string;
-    languageId: string;
-    range?: { startLine: number; endLine: number };
-  }): void {
-    this.postMessage({ type: "addContextChipFromEditor", chip });
-    this.postMessage({ type: "focusChatInput" });
-  }
-
-  private postMessage(message: Record<string, unknown>): void {
-    this.view?.webview.postMessage(message);
-  }
+  // ---------------------------------------------------------------------------
+  // HTML
+  // ---------------------------------------------------------------------------
 
   private getHtmlContent(webview: vscode.Webview): string {
     const styleResetUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "media", "reset.css"));

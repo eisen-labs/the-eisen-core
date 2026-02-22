@@ -32,6 +32,7 @@ struct Args {
     port: u16,
     agent_id: Option<String>,
     session_id: Option<String>,
+    cwd: Option<PathBuf>,
     zone_patterns: Vec<String>,
     deny_patterns: Vec<String>,
     agent_command: String,
@@ -87,6 +88,7 @@ fn parse_observe_args(raw: &[String]) -> Result<Args> {
     let mut port: u16 = tcp::DEFAULT_PORT;
     let mut agent_id: Option<String> = None;
     let mut session_id: Option<String> = None;
+    let mut cwd: Option<PathBuf> = None;
     let mut zone_patterns: Vec<String> = Vec::new();
     let mut deny_patterns: Vec<String> = Vec::new();
     let mut i = 1; // skip "observe"
@@ -105,6 +107,10 @@ fn parse_observe_args(raw: &[String]) -> Result<Args> {
             "--session-id" => {
                 i += 1;
                 session_id = raw.get(i).cloned();
+            }
+            "--cwd" => {
+                i += 1;
+                cwd = raw.get(i).map(PathBuf::from);
             }
             "--zone" => {
                 i += 1;
@@ -143,6 +149,7 @@ fn parse_observe_args(raw: &[String]) -> Result<Args> {
         port,
         agent_id,
         session_id,
+        cwd,
         zone_patterns,
         deny_patterns,
         agent_command,
@@ -173,6 +180,9 @@ async fn main() -> Result<()> {
             }
             if let Some(sid) = &args.session_id {
                 tracker.set_session_id(sid.clone());
+            }
+            if let Some(root) = args.cwd {
+                tracker.set_workspace_root(root);
             }
             let tracker = Arc::new(Mutex::new(tracker));
 

@@ -7,6 +7,9 @@ extension/bin/
 extension/media/
 *.log
 
+app/package-lock.json
+crates/eisen-napi/package-lock.json
+
 .vscode/*
 !.vscode/launch.json
 !.vscode/tasks.json

@@ -1,0 +1,18 @@
+{
+  "name": "eisen-cosmos",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/main.ts --bundle --outfile=../extension/media/graph.js --format=iife --minify && cp src/style.css ../extension/media/graph.css",
+    "dev": "esbuild src/main.ts --bundle --outfile=../extension/media/graph.js --format=iife --watch",
+    "clean": "rm -f ../extension/media/graph.js ../extension/media/graph.css"
+  },
+  "devDependencies": {
+    "esbuild": "^0.20.0",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "@cosmos.gl/graph": "^2.6.4",
+    "tweakpane": "^4.0.5"
+  }
+}

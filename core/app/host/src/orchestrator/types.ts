@@ -1,4 +1,4 @@
-// Wire protocol types — what eisen-core sends over TCP (snake_case JSON)
+// Wire protocol types -- what eisen-core sends over TCP (snake_case JSON)
 
 export interface WireFileNode {
   path: string;

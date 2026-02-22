@@ -1,0 +1,324 @@
+/* === Reset === */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* === Dark Tokens === */
+
+html[data-theme="dark"] {
+  --p-bg-0: #141414;
+  --p-bg-1: #1a1a1a;
+  --p-bg-2: #1e1e1e;
+  --p-bg-3: #252525;
+  --p-bg-4: #2c2c2c;
+
+  --p-border-0: rgba(255, 255, 255, 0.07);
+  --p-border-1: rgba(255, 255, 255, 0.14);
+  --p-border-2: rgba(255, 255, 255, 0.20);
+  --p-border-3: rgba(255, 255, 255, 0.30);
+
+  --p-text-0: rgba(255, 255, 255, 0.95);
+  --p-text-1: rgba(255, 255, 255, 0.70);
+  --p-text-2: rgba(255, 255, 255, 0.45);
+  --p-text-3: rgba(255, 255, 255, 0.22);
+
+  --p-agent-0: #6b82a8;
+  --p-agent-1: #5a8a72;
+  --p-agent-2: #8a6070;
+  --p-agent-3: #8a7454;
+  --p-agent-4: #607080;
+
+  --p-status-ok: #5a8a72;
+  --p-status-warn: #8a7454;
+  --p-status-error: #8a5050;
+
+  --ui-bg-base: var(--p-bg-2);
+  --ui-bg-surface: var(--p-bg-3);
+  --ui-bg-raised: var(--p-bg-4);
+  --ui-bg-input: var(--p-bg-1);
+  --ui-border-default: var(--p-border-1);
+  --ui-border-subtle: var(--p-border-0);
+  --ui-border-strong: var(--p-border-3);
+  --ui-text-primary: var(--p-text-0);
+  --ui-text-secondary: var(--p-text-1);
+  --ui-text-muted: var(--p-text-2);
+  --ui-text-ghost: var(--p-text-3);
+}
+
+/* === Light Tokens === */
+
+html[data-theme="light"] {
+  --p-bg-0: #f0f0f0;
+  --p-bg-1: #e6e6e6;
+  --p-bg-2: #dcdcdc;
+  --p-bg-3: #d0d0d0;
+  --p-bg-4: #c6c6c6;
+
+  --p-border-0: rgba(0, 0, 0, 0.07);
+  --p-border-1: rgba(0, 0, 0, 0.16);
+  --p-border-2: rgba(0, 0, 0, 0.24);
+  --p-border-3: rgba(0, 0, 0, 0.35);
+
+  --p-text-0: rgba(0, 0, 0, 0.90);
+  --p-text-1: rgba(0, 0, 0, 0.68);
+  --p-text-2: rgba(0, 0, 0, 0.48);
+  --p-text-3: rgba(0, 0, 0, 0.28);
+
+  --p-agent-0: #4a6080;
+  --p-agent-1: #3d6a52;
+  --p-agent-2: #6a4050;
+  --p-agent-3: #6a5438;
+  --p-agent-4: #485868;
+
+  --p-status-ok: #3d6a52;
+  --p-status-warn: #6a5438;
+  --p-status-error: #6a3838;
+
+  --ui-bg-base: var(--p-bg-2);
+  --ui-bg-surface: var(--p-bg-3);
+  --ui-bg-raised: var(--p-bg-4);
+  --ui-bg-input: var(--p-bg-1);
+  --ui-border-default: var(--p-border-1);
+  --ui-border-subtle: var(--p-border-0);
+  --ui-border-strong: var(--p-border-3);
+  --ui-text-primary: var(--p-text-0);
+  --ui-text-secondary: var(--p-text-1);
+  --ui-text-muted: var(--p-text-2);
+  --ui-text-ghost: var(--p-text-3);
+}
+
+/* === Base === */
+
+html, body {
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+  background: var(--p-bg-0);
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--ui-text-primary);
+}
+
+#graph {
+  width: 100vw;
+  height: 100vh;
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+#graph canvas {
+  display: block;
+}
+
+::selection {
+  background: var(--p-border-2);
+  color: inherit;
+}
+
+/* === Buttons === */
+
+.ui-btn {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--ui-border-default);
+  border-radius: 0;
+  background: var(--ui-bg-surface);
+  color: var(--ui-text-secondary);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 22px;
+  cursor: pointer;
+  transition: border-color 80ms, color 80ms;
+}
+
+.ui-btn:hover {
+  border-color: var(--ui-border-strong);
+  color: var(--ui-text-primary);
+}
+
+.ui-btn--ghost {
+  background: transparent;
+  border-color: transparent;
+}
+
+.ui-btn--ghost:hover {
+  border-color: var(--ui-border-default);
+}
+
+/* === Badge === */
+
+.ui-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border: 1px solid var(--ui-border-default);
+  border-radius: 0;
+  background: var(--ui-bg-surface);
+  font-family: inherit;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--ui-text-secondary);
+}
+
+/* === Animations === */
+
+@keyframes indicator-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1.0; }
+}
+
+/* === Marquee === */
+
+.marquee {
+  position: fixed;
+  display: none;
+  border: 1px solid var(--ui-border-strong);
+  background: var(--p-border-0);
+  pointer-events: none;
+  z-index: 30;
+  border-radius: 0;
+}
+
+/* === Logo Button === */
+
+.logo-button {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  z-index: 20;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  color: var(--ui-text-muted);
+  opacity: 0.45;
+  transition: opacity 150ms, color 150ms;
+}
+
+.logo-button:hover {
+  opacity: 1.0;
+  color: var(--ui-text-primary);
+}
+
+.logo-button svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* === Graph Controls === */
+
+.graph-controls {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  background: rgba(20, 20, 20, 0.75);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--ui-border-default);
+}
+
+.graph-controls *{outline:none}
+
+.graph-control-btn {
+  width: 28px;
+  height: 28px;
+  padding: 6px;
+  border: none;
+  border-right: 1px solid var(--ui-border-default);
+  background: none;
+  color: var(--ui-text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.graph-control-btn:last-child {
+  border-right: none;
+}
+
+.graph-control-btn:hover {
+  color: var(--ui-text-primary);
+}
+
+.graph-control-btn svg {
+  width: 100%;
+  height: 100%;
+}
+
+
+/* === Info Panel === */
+
+.info-panel {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 20;
+  width: 360px;
+  background: rgba(20, 20, 20, 0.75);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid var(--ui-border-default);
+  border-radius: 0;
+  padding: 8px 12px;
+  font-size: 11px;
+  font-family: inherit;
+  line-height: 1.4;
+  pointer-events: none;
+}
+
+.info-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.info-panel-label {
+  color: var(--ui-text-primary);
+  font-size: 12px;
+}
+
+.info-kv {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 1px 0;
+}
+
+.info-kv-key {
+  color: var(--ui-text-muted);
+  flex-shrink: 0;
+}
+
+.info-kv-val {
+  color: var(--ui-text-primary);
+}
+
+.info-panel-path {
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--ui-text-ghost);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* === Light overrides for translucent panels === */
+
+html[data-theme="light"] .info-panel {
+  background: rgba(220, 220, 220, 0.75);
+}

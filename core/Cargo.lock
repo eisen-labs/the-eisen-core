@@ -830,6 +830,7 @@ name = "eisen-app"
 version = "0.1.0"
 dependencies = [
  "eisen-core",
+ "libc",
  "log",
  "serde",
  "serde_json",

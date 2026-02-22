@@ -3,9 +3,9 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
-    "build": "esbuild src/main.ts --bundle --outfile=dist/main.js --format=iife --minify && cp src/style.css dist/",
-    "build:win": "esbuild src/main.ts --bundle --outfile=dist/main.js --format=iife --minify && node -e \"require('node:fs').copyFileSync('src/style.css','dist/style.css')\"",
-    "dev": "esbuild src/main.ts --bundle --outfile=dist/main.js --format=iife --watch",
+    "build": "esbuild src/main.ts --bundle --outfile=dist/main.js --format=iife --minify --loader:.ttf=file && cat dist/main.css src/style.css > dist/style.css",
+    "build:win": "esbuild src/main.ts --bundle --outfile=dist/main.js --format=iife --minify --loader:.ttf=file && node -e \"const fs=require('node:fs');fs.writeFileSync('dist/style.css',fs.readFileSync('dist/main.css','utf8')+fs.readFileSync('src/style.css','utf8'))\"",
+    "dev": "esbuild src/main.ts --bundle --outfile=dist/main.js --format=iife --watch --loader:.ttf=file",
     "clean": "rm -rf dist"
   },
   "devDependencies": {
@@ -14,6 +14,8 @@
   },
   "dependencies": {
     "d3-force-3d": "^3.0.6",
-    "force-graph": "^1.51.0"
+    "force-graph": "^1.51.0",
+    "marked": "^17.0.3",
+    "monaco-editor": "0.55.1"
   }
 }

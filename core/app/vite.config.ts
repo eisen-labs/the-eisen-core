@@ -1,12 +1,17 @@
 import { defineConfig } from "vite";
-import tailwindcss from "@tailwindcss/vite";
+import path from "node:path";
 
 export default defineConfig({
   root: ".",
-  plugins: [tailwindcss()],
   server: {
     port: 5174,
     strictPort: true,
+    fs: {
+      allow: [
+        ".",
+        path.resolve(__dirname, "../ui"),
+      ],
+    },
   },
   build: {
     outDir: "dist",

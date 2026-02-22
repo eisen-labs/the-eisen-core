@@ -205,20 +205,20 @@ export const DARK: Palette = {
     function: { r: 236, g: 174, b: 126 },
     fileFallback: { r: 214, g: 222, b: 232 },
     fileBrightness: 0.08,
-    stroke: "rgba(255,255,255,0.5)",
+    stroke: "rgba(255,255,255,0.6)",
     strokeWidth: 1.5,
-    inContextStroke: "rgba(34, 197, 94, 0.7)",
-    inContextOverlay: "rgba(34, 197, 94, 0.5)",
+    inContextStroke: "rgba(34, 197, 94, 0.8)",
+    inContextOverlay: "rgba(34, 197, 94, 0.55)",
     writeStroke: "#f59e0b",
-    writeOverlay: "rgba(245, 158, 11, 0.45)",
+    writeOverlay: "rgba(245, 158, 11, 0.5)",
     selectedStroke: "#60a5fa",
     selectedStrokeWidth: 2.5,
     callerStroke: "#a78bfa",
   },
   link: {
-    color: "rgba(255,255,255,0.3)",
+    color: "rgba(255,255,255,0.4)",
     width: 1,
-    callColor: "rgba(167, 139, 250, 0.8)",
+    callColor: "rgba(167, 139, 250, 0.85)",
     callWidth: 2,
   },
   force: { ...SHARED_FORCE },
@@ -227,8 +227,8 @@ export const DARK: Palette = {
     baseFont: 10,
     minFont: 8,
     lineHeight: 1.15,
-    bg: "rgba(30, 30, 30, 0.5)",
-    fg: "#e5e7eb",
+    bg: "rgba(30, 30, 30, 0.6)",
+    fg: "#f0f0f0",
     offsetY: 2,
   },
   zoom: { ...SHARED_ZOOM },
@@ -249,20 +249,20 @@ export const LIGHT: Palette = {
     function: { r: 184, g: 122, b: 58 },
     fileFallback: { r: 90, g: 90, b: 90 },
     fileBrightness: 0.08,
-    stroke: "rgba(0,0,0,0.5)",
+    stroke: "rgba(0,0,0,0.6)",
     strokeWidth: 1.5,
-    inContextStroke: "rgba(20, 150, 70, 0.7)",
-    inContextOverlay: "rgba(20, 150, 70, 0.5)",
+    inContextStroke: "rgba(20, 150, 70, 0.8)",
+    inContextOverlay: "rgba(20, 150, 70, 0.55)",
     writeStroke: "#d97706",
-    writeOverlay: "rgba(217, 119, 6, 0.45)",
+    writeOverlay: "rgba(217, 119, 6, 0.5)",
     selectedStroke: "#3b82f6",
     selectedStrokeWidth: 2.5,
     callerStroke: "#7c3aed",
   },
   link: {
-    color: "rgba(0,0,0,0.3)",
+    color: "rgba(0,0,0,0.4)",
     width: 1,
-    callColor: "rgba(124, 58, 237, 0.8)",
+    callColor: "rgba(124, 58, 237, 0.85)",
     callWidth: 2,
   },
   force: { ...SHARED_FORCE },
@@ -271,8 +271,8 @@ export const LIGHT: Palette = {
     baseFont: 10,
     minFont: 8,
     lineHeight: 1.15,
-    bg: "rgba(240, 240, 240, 0.5)",
-    fg: "#1f2937",
+    bg: "rgba(240, 240, 240, 0.6)",
+    fg: "#1a1a1a",
     offsetY: 2,
   },
   zoom: { ...SHARED_ZOOM },
@@ -324,6 +324,12 @@ function brighten(rgb: Rgb, amount: number): Rgb {
   return mixRgb(rgb, WHITE, amount);
 }
 
+const BLACK: Rgb = { r: 0, g: 0, b: 0 };
+
+function darken(rgb: Rgb, amount: number): Rgb {
+  return mixRgb(rgb, BLACK, amount);
+}
+
 // --- Path / folder helpers ---
 
 function getPathPart(id: string): string {
@@ -354,9 +360,10 @@ function folderDepth(key: string): number {
 function folderColorRgb(key: string): Rgb {
   const base = hexToRgb(palette.region.base);
   const depth = folderDepth(key);
-  const depthLift = Math.min(0.05 + depth * 0.03, 0.2);
+  const depthLift = Math.min(0.08 + depth * 0.045, 0.3);
   const variation = (hashKey(key || "root") % 6) * 0.012;
-  return brighten(base, depthLift + variation);
+  const shift = depthLift + variation;
+  return palette === DARK ? brighten(base, shift) : darken(base, shift);
 }
 
 function folderSelectedColorRgb(key: string): Rgb {
@@ -371,8 +378,12 @@ export function getFolderBg(key: string, alpha = 0.14): string {
   return toCss(folderColorRgb(key), alpha);
 }
 
+function shiftContrast(rgb: Rgb, amount: number): Rgb {
+  return palette === DARK ? brighten(rgb, amount) : darken(rgb, amount);
+}
+
 export function getFolderStroke(key: string, alpha = 0.28): string {
-  return toCss(brighten(folderColorRgb(key), 0.16), alpha);
+  return toCss(shiftContrast(folderColorRgb(key), 0.16), alpha);
 }
 
 export function getFolderBgSelected(key: string, alpha = 0.14): string {
@@ -380,7 +391,7 @@ export function getFolderBgSelected(key: string, alpha = 0.14): string {
 }
 
 export function getFolderStrokeSelected(key: string, alpha = 0.24): string {
-  return toCss(brighten(folderSelectedColorRgb(key), 0.12), alpha);
+  return toCss(shiftContrast(folderSelectedColorRgb(key), 0.12), alpha);
 }
 
 export function getFolderBgReferenced(key: string, alpha = 0.14): string {
@@ -388,7 +399,7 @@ export function getFolderBgReferenced(key: string, alpha = 0.14): string {
 }
 
 export function getFolderStrokeReferenced(key: string, alpha = 0.24): string {
-  return toCss(brighten(folderReferencedColorRgb(key), 0.12), alpha);
+  return toCss(shiftContrast(folderReferencedColorRgb(key), 0.12), alpha);
 }
 
 // --- File color (per-language) ---
@@ -439,6 +450,14 @@ export function getNodeColor(id: string, kind: NodeKind): string {
   return toCss(brighten(getFileColor(getPathPart(id)), palette.node.fileBrightness));
 }
 
-export function getNodeStroke(inContext?: boolean): string {
-  return inContext ? palette.node.inContextStroke : palette.node.stroke;
+export function getBadgeColor(id: string, kind: NodeKind): string {
+  if (kind === "class") return toCss(palette.node.class);
+  if (kind === "method") return toCss(palette.node.method);
+  if (kind === "function") return toCss(palette.node.function);
+  if (kind === "folder") return toCss(palette.node.fileFallback);
+  return toCss(brighten(getFileColor(getPathPart(id)), palette.node.fileBrightness));
+}
+
+export function getNodeStroke(): string {
+  return palette.node.stroke;
 }

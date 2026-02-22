@@ -1,3 +1,4 @@
+import { marked } from "marked";
 import { el } from "../dom";
 import { ICON } from "../panels/icons";
 import type {
@@ -10,12 +11,22 @@ import type {
 } from "../types";
 import { escapeHtml } from "../utils";
 
+marked.setOptions({ breaks: true, gfm: true });
+marked.use({
+  renderer: {
+    html({ text }: { text: string }) {
+      return escapeHtml(text);
+    },
+  },
+});
+
 export interface ChatCb {
   onSend(text: string, instanceId: string | null, chips: ContextChip[]): void;
   onAddAgent(type: string, mode: SessionMode): void;
   onModeChange(id: string): void;
   onModelChange(id: string): void;
   onFileSearch(query: string): void;
+  onPickerDismiss?(): void;
 }
 
 const OPT = "option";
@@ -34,10 +45,25 @@ export class Chat {
   private settingsBtn!: HTMLElement;
 
   private activeId: string | null = null;
-  private msgMap = new Map<string, { from: string; text: string }[]>();
+  private msgMap = new Map<
+    string,
+    Array<{
+      from: string;
+      text: string;
+      tools?: Array<{ id: string; name: string; title: string | null; status: string; input: string | null }>;
+    }>
+  >();
   private metaMap = new Map<string, SessionMeta>();
   private streamEl: HTMLElement | null = null;
+  private thinkingEl: HTMLElement | null = null;
   private streamText = "";
+  private streamRaf: number | null = null;
+  private segmentOffset = 0;
+  private streamingId: string | null = null;
+  private toolEls = new Map<string, HTMLElement>();
+  private streamTools: Array<{ id: string; name: string; title: string | null; status: string; input: string | null }> =
+    [];
+  private liveToolGroup: HTMLElement | null = null;
 
   private files: FileSearchResult[] = [];
   private fileIdx = -1;
@@ -48,6 +74,8 @@ export class Chat {
   private agents: AvailableAgent[] = [];
   private open: string | null = null;
   private agentMode: SessionMode = "single_agent";
+  private pendingAgentType: string | null = null;
+  private pendingMsgs: Array<{ from: string; text: string }> = [];
 
   constructor(cb: ChatCb) {
     this.cb = cb;
@@ -101,6 +129,7 @@ export class Chat {
       if (t) this.pickFile(Number(t.dataset.i));
     });
     this.dropdowns.settings.addEventListener("mousedown", (e) => e.preventDefault());
+    this.dropdowns.agents.addEventListener("mousedown", (e) => e.preventDefault());
 
     this.chipBar = el("div", { className: "chip-bar" });
     this.chipBar.addEventListener("click", (e) => {
@@ -130,6 +159,10 @@ export class Chat {
   }
 
   destroy(): void {
+    if (this.streamRaf) {
+      cancelAnimationFrame(this.streamRaf);
+      this.streamRaf = null;
+    }
     if (this.fileTimer) {
       clearTimeout(this.fileTimer);
       this.fileTimer = null;
@@ -153,23 +186,58 @@ export class Chat {
   }
 
   selectAgent(id: string): void {
+    if (id === this.activeId && !this.pendingMsgs.length) return;
     this.activeId = id;
+    this.pendingAgentType = null;
     this.close();
+    const hadPending = this.pendingMsgs.length > 0;
+    if (hadPending) {
+      let list = this.msgMap.get(id);
+      if (!list) {
+        list = [];
+        this.msgMap.set(id, list);
+      }
+      list.push(...this.pendingMsgs);
+      this.pendingMsgs = [];
+    }
     this.renderMessages();
+    if (hadPending && this.streamingId !== id) {
+      this.thinkingEl = el("div", { className: "thinking-dot" });
+      this.messages.append(this.thinkingEl);
+      this.messages.scrollTop = this.messages.scrollHeight;
+    }
+  }
+
+  clearAgent(): void {
+    this.activeId = null;
+    this.pendingAgentType = null;
+    this.renderMessages();
+  }
+
+  getPendingAgent(): { type: string; mode: SessionMode } | null {
+    if (!this.pendingAgentType) return null;
+    return { type: this.pendingAgentType, mode: this.agentMode };
+  }
+
+  addPendingMessage(text: string): void {
+    const msg = { from: "user", text };
+    this.pendingMsgs.push(msg);
+    this.appendMsg(msg);
+    this.thinkingEl = el("div", { className: "thinking-dot" });
+    this.messages.append(this.thinkingEl);
+    this.messages.scrollTop = this.messages.scrollHeight;
   }
 
   setAgents(a: AvailableAgent[]): void {
     this.agents = a;
+    if (this.open === "agents") this.renderAgentPicker();
   }
   setCommands(c: AvailableCommand[]): void {
     this.cmds = c;
   }
 
   showAgentPicker(): void {
-    if (this.open === "agents") {
-      this.close();
-      return;
-    }
+    if (this.open === "agents") return;
     this.close();
     this.open = "agents";
     const p = this.dropdowns.agents;
@@ -182,41 +250,23 @@ export class Chat {
     const p = this.dropdowns.agents;
     p.innerHTML = "";
 
-    const header = el("div", { className: "agent-picker-header" });
-    header.append(el("div", { className: "agent-picker-label" }, "Mode"));
+    // Session type
+    p.append(el("div", { className: "settings-label" }, "Session"));
+    const modes: Array<{ label: string; value: SessionMode }> = [
+      { label: "Normal", value: "single_agent" },
+      { label: "Orchestrator", value: "orchestrator" },
+    ];
+    for (const m of modes) {
+      const row = el("div", { className: m.value === this.agentMode ? OPT_ON : OPT }, m.label);
+      row.addEventListener("click", () => {
+        this.agentMode = m.value;
+        this.renderAgentPicker();
+      });
+      p.append(row);
+    }
 
-    const toggle = el("div", { className: "agent-mode-toggle" });
-    const normal = el(
-      "button",
-      {
-        type: "button",
-        className: this.agentMode === "single_agent" ? "mode-chip active" : "mode-chip",
-      },
-      "Normal",
-    );
-    const orchestrator = el(
-      "button",
-      {
-        type: "button",
-        className: this.agentMode === "orchestrator" ? "mode-chip active" : "mode-chip",
-      },
-      "Orchestrator",
-    );
-    normal.addEventListener("click", () => {
-      if (this.agentMode !== "single_agent") {
-        this.agentMode = "single_agent";
-        this.renderAgentPicker();
-      }
-    });
-    orchestrator.addEventListener("click", () => {
-      if (this.agentMode !== "orchestrator") {
-        this.agentMode = "orchestrator";
-        this.renderAgentPicker();
-      }
-    });
-    toggle.append(normal, orchestrator);
-    header.append(toggle);
-    p.append(header);
+    // Provider list
+    p.append(el("div", { className: "settings-label" }, "Provider"));
 
     if (!this.agents.length) {
       p.append(el("div", { className: "option" }, "No providers available"));
@@ -224,10 +274,17 @@ export class Chat {
     }
 
     for (const a of this.agents) {
-      const btn = el("div", { className: OPT }, a.name);
+      const selected = a.id === this.pendingAgentType;
+      const btn = el("div", { className: selected ? OPT_ON : OPT }, a.name);
       btn.addEventListener("click", () => {
-        this.close();
-        this.cb.onAddAgent(a.id, this.agentMode);
+        if (this.pendingAgentType === a.id) {
+          this.pendingAgentType = null;
+          this.cb.onPickerDismiss?.();
+        } else {
+          this.pendingAgentType = a.id;
+          this.cb.onAddAgent(a.id, this.agentMode);
+        }
+        this.renderAgentPicker();
       });
       p.append(btn);
     }
@@ -246,24 +303,155 @@ export class Chat {
   }
 
   streamStart(id: string): void {
-    if (id !== this.activeId) return;
+    if (this.streamingId && this.streamingId !== id && this.streamText) {
+      this.flushStream(this.streamingId);
+    }
+    this.streamingId = id;
     this.streamText = "";
-    this.streamEl = el("div", { className: "msg msg-agent" });
-    this.messages.append(this.streamEl);
-  }
-
-  streamChunk(text: string, id: string): void {
-    if (id !== this.activeId || !this.streamEl) return;
-    this.streamText += text;
-    this.streamEl.textContent = this.streamText;
+    this.segmentOffset = 0;
+    this.toolEls.clear();
+    this.streamTools = [];
+    this.liveToolGroup = null;
+    if (id !== this.activeId) return;
+    if (!this.thinkingEl) {
+      this.thinkingEl = el("div", { className: "thinking-dot" });
+      this.messages.append(this.thinkingEl);
+    }
+    this.streamEl = null;
     this.messages.scrollTop = this.messages.scrollHeight;
   }
 
-  streamEnd(id: string): void {
-    if (id !== this.activeId) return;
-    this.streamEl?.remove();
+  private flushStream(id: string): void {
+    if (this.streamRaf) {
+      cancelAnimationFrame(this.streamRaf);
+      this.streamRaf = null;
+    }
+    if (this.streamText) {
+      let list = this.msgMap.get(id);
+      if (!list) {
+        list = [];
+        this.msgMap.set(id, list);
+      }
+      list.push({
+        from: "agent",
+        text: this.streamText,
+        tools: this.streamTools.length ? [...this.streamTools] : undefined,
+      });
+    }
     this.streamEl = null;
     this.streamText = "";
+    this.segmentOffset = 0;
+    this.toolEls.clear();
+    this.streamTools = [];
+    this.liveToolGroup = null;
+    this.streamingId = null;
+  }
+
+  streamChunk(text: string, id: string): void {
+    this.streamText += text;
+    if (id !== this.activeId) return;
+    if (this.thinkingEl) {
+      this.thinkingEl.remove();
+      this.thinkingEl = null;
+    }
+    if (!this.streamEl) {
+      this.streamEl = el("div", { className: "msg msg-agent" });
+      this.messages.append(this.streamEl);
+    }
+    if (!this.streamRaf) {
+      this.streamRaf = requestAnimationFrame(() => {
+        this.streamRaf = null;
+        if (this.streamEl) {
+          this.streamEl.innerHTML = marked.parse(this.streamText.slice(this.segmentOffset)) as string;
+          this.messages.scrollTop = this.messages.scrollHeight;
+        }
+      });
+    }
+  }
+
+  streamEnd(id: string): void {
+    if (this.streamRaf) {
+      cancelAnimationFrame(this.streamRaf);
+      this.streamRaf = null;
+    }
+    if (this.streamEl) {
+      this.streamEl.innerHTML = marked.parse(this.streamText.slice(this.segmentOffset)) as string;
+    }
+    if (this.thinkingEl) {
+      this.thinkingEl.remove();
+      this.thinkingEl = null;
+    }
+    this.liveToolGroup = null;
+    const key = id || this.activeId;
+    if (this.streamText && key) {
+      let list = this.msgMap.get(key);
+      if (!list) {
+        list = [];
+        this.msgMap.set(key, list);
+      }
+      list.push({
+        from: "agent",
+        text: this.streamText,
+        tools: this.streamTools.length ? [...this.streamTools] : undefined,
+      });
+    }
+    this.streamEl = null;
+    this.streamText = "";
+    this.segmentOffset = 0;
+    this.streamingId = null;
+    this.toolEls.clear();
+    this.streamTools = [];
+  }
+
+  toolCallStart(name: string, toolCallId: string, instanceId?: string | null): void {
+    const target = instanceId || this.streamingId || this.activeId;
+    this.streamEl = null;
+    this.segmentOffset = this.streamText.length;
+    this.streamTools.push({ id: toolCallId, name, title: null, status: "running", input: null });
+    if (target !== this.activeId) return;
+    if (this.thinkingEl) {
+      this.thinkingEl.remove();
+      this.thinkingEl = null;
+    }
+    if (!this.liveToolGroup) {
+      this.liveToolGroup = el("div", { className: "msg msg-agent tool-bubble" }) as HTMLDivElement;
+      this.messages.append(this.liveToolGroup);
+    }
+    const toolEl = el("div", { className: "tool-call" });
+    toolEl.textContent = name;
+    this.liveToolGroup.append(toolEl);
+    this.toolEls.set(toolCallId, toolEl);
+    this.liveToolGroup.scrollTop = this.liveToolGroup.scrollHeight;
+    this.messages.scrollTop = this.messages.scrollHeight;
+  }
+
+  toolCallComplete(
+    toolCallId: string,
+    title: string | null,
+    status: string,
+    input?: string | null,
+    instanceId?: string | null,
+  ): void {
+    const target = instanceId || this.streamingId || this.activeId;
+    const t = this.streamTools.find((s) => s.id === toolCallId);
+    if (t) {
+      if (title) t.title = title;
+      t.status = status;
+      if (input) t.input = input;
+    }
+    if (target !== this.activeId) return;
+    const toolEl = this.toolEls.get(toolCallId);
+    if (toolEl) {
+      const label = title || toolEl.textContent || "";
+      if (input) {
+        toolEl.innerHTML = "";
+        toolEl.append(el("span", {}, label), el("span", { className: "tool-input-preview" }, input));
+      } else if (title) {
+        toolEl.textContent = title;
+      }
+      toolEl.classList.add(status === "completed" ? "tool-done" : "tool-fail");
+    }
+    if (this.liveToolGroup) this.liveToolGroup.scrollTop = this.liveToolGroup.scrollHeight;
   }
 
   addMessage(msg: { from: string; text: string; instanceId?: string }): void {
@@ -290,8 +478,14 @@ export class Chat {
     this.open = which;
 
     if (which === "settings") {
-      const meta = this.activeId ? this.metaMap.get(this.activeId) : null;
+      const meta = this.activeId ? this.metaMap.get(this.activeId) : undefined;
       if (!meta) {
+        this.open = null;
+        return;
+      }
+      const modes = meta.modes?.availableModes ?? [];
+      const models = meta.models?.availableModels ?? [];
+      if (!modes.length && !models.length) {
         this.open = null;
         return;
       }
@@ -299,8 +493,9 @@ export class Chat {
     }
   }
 
-  private close(): void {
+  close(): void {
     if (!this.open) return;
+    const wasAgents = this.open === "agents";
     this.dropdowns[this.open].style.display = "none";
     this.dropdowns[this.open].innerHTML = "";
     if (this.fileTimer) {
@@ -312,6 +507,9 @@ export class Chat {
     this.atPos = null;
     this.cmdIdx = -1;
     this.open = null;
+    if (wasAgents && !this.pendingAgentType) {
+      this.cb.onPickerDismiss?.();
+    }
   }
 
   private renderSettings(meta: SessionMeta): void {
@@ -361,6 +559,7 @@ export class Chat {
   private doSend(): void {
     const text = this.input.value.trim();
     if (!text && !this.chips.length) return;
+    if (!this.activeId && !this.pendingAgentType) return;
     this.close();
     const chips = [...this.chips];
     this.chips = [];
@@ -375,6 +574,7 @@ export class Chat {
     const max = (parseFloat(getComputedStyle(this.input).lineHeight) || 18) * 4;
     this.input.style.height = `${Math.min(this.input.scrollHeight, max)}px`;
     this.input.style.overflowY = this.input.scrollHeight > max ? "auto" : "hidden";
+    requestAnimationFrame(() => this.repositionDropdowns());
   }
 
   private onKey(e: KeyboardEvent): void {
@@ -570,19 +770,90 @@ export class Chat {
       .join("");
   }
 
+  setHistory(
+    instanceKey: string,
+    msgs: Array<{
+      from: string;
+      text: string;
+      tools?: Array<{ id: string; name: string; title: string | null; status: string; input: string | null }>;
+    }>,
+  ): void {
+    this.msgMap.set(instanceKey, msgs ? [...msgs] : []);
+    if (this.activeId === instanceKey) {
+      this.renderMessages();
+    }
+  }
+
   private renderMessages(): void {
     this.messages.innerHTML = "";
     this.streamEl = null;
+    this.liveToolGroup = null;
+    this.toolEls.clear();
     const list = this.activeId ? this.msgMap.get(this.activeId) : null;
-    if (!list) return;
-    for (const m of list) this.appendMsg(m);
+    if (list) {
+      for (const m of list) this.appendMsg(m);
+    }
+    if (this.streamingId === this.activeId) {
+      this.renderActiveStream();
+    }
     this.messages.scrollTop = this.messages.scrollHeight;
   }
 
-  private appendMsg(msg: { from: string; text: string }): void {
+  private renderActiveStream(): void {
+    if (!this.streamTools.length && !this.streamText) return;
+    if (this.streamTools.length) {
+      this.liveToolGroup = el("div", { className: "msg msg-agent tool-bubble" });
+      this.toolEls.clear();
+      for (const t of this.streamTools) {
+        const cls = `tool-call${t.status === "completed" ? " tool-done" : t.status === "failed" ? " tool-fail" : ""}`;
+        const toolEl = el("div", { className: cls });
+        const label = t.title || t.name;
+        if (t.input) {
+          toolEl.append(el("span", {}, label), el("span", { className: "tool-input-preview" }, t.input));
+        } else {
+          toolEl.textContent = label;
+        }
+        this.liveToolGroup.append(toolEl);
+        this.toolEls.set(t.id, toolEl);
+      }
+      this.messages.append(this.liveToolGroup);
+    }
+    const textAfterTools = this.streamText.slice(this.segmentOffset);
+    if (textAfterTools) {
+      this.streamEl = el("div", { className: "msg msg-agent" });
+      this.streamEl.innerHTML = marked.parse(textAfterTools) as string;
+      this.messages.append(this.streamEl);
+    }
+    this.messages.scrollTop = this.messages.scrollHeight;
+  }
+
+  private appendMsg(msg: {
+    from: string;
+    text: string;
+    tools?: Array<{ id: string; name: string; title: string | null; status: string; input: string | null }>;
+  }): void {
     const isUser = msg.from === "user";
     const msgEl = el("div", { className: `msg ${isUser ? "msg-user" : "msg-agent"}` });
-    msgEl.textContent = msg.text;
+    if (isUser) {
+      msgEl.textContent = msg.text;
+    } else {
+      msgEl.innerHTML = marked.parse(msg.text) as string;
+    }
     this.messages.append(msgEl);
+    if (msg.tools?.length) {
+      const bubble = el("div", { className: "msg msg-agent tool-bubble" });
+      for (const t of msg.tools) {
+        const cls = `tool-call${t.status === "completed" ? " tool-done" : t.status === "failed" ? " tool-fail" : ""}`;
+        const toolEl = el("div", { className: cls });
+        const label = t.title || t.name;
+        if (t.input) {
+          toolEl.append(el("span", {}, label), el("span", { className: "tool-input-preview" }, t.input));
+        } else {
+          toolEl.textContent = label;
+        }
+        bubble.append(toolEl);
+      }
+      this.messages.append(bubble);
+    }
   }
 }

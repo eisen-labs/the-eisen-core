@@ -22,23 +22,28 @@ export function getCorePath(hostDir?: string): string {
     if (fs.existsSync(sameDir)) {
       return path.resolve(sameDir);
     }
-    // 2. Repo-relative from host: host is in app/src-tauri/bin, so ../../../../ = repo root
-    const repoRelative = path.join(hostBinDir, "..", "..", "..", "..", "core", "target", "release", binaryName);
-    if (fs.existsSync(repoRelative)) {
-      return path.resolve(repoRelative);
+    // 2. Workspace target (cargo workspace builds to repo-root/target/)
+    const workspaceTarget = path.join(hostBinDir, "..", "..", "..", "target", "release", binaryName);
+    if (fs.existsSync(workspaceTarget)) {
+      return path.resolve(workspaceTarget);
+    }
+    // 3. Crate-local target (standalone cargo build in core/)
+    const crateTarget = path.join(hostBinDir, "..", "..", "..", "core", "target", "release", binaryName);
+    if (fs.existsSync(crateTarget)) {
+      return path.resolve(crateTarget);
     }
   }
 
-  // 3. Cwd-relative (e.g. when run from repo root)
-  const devPath = path.join(process.cwd(), "..", "..", "core", "target", "release", binaryName);
-  if (fs.existsSync(devPath)) {
-    return path.resolve(devPath);
+  // 4. Cwd-relative (e.g. when run from repo root)
+  const cwdWorkspace = path.join(process.cwd(), "target", "release", binaryName);
+  if (fs.existsSync(cwdWorkspace)) {
+    return path.resolve(cwdWorkspace);
   }
-  const devPath2 = path.join(process.cwd(), "core", "target", "release", binaryName);
-  if (fs.existsSync(devPath2)) {
-    return path.resolve(devPath2);
+  const cwdCrate = path.join(process.cwd(), "core", "target", "release", binaryName);
+  if (fs.existsSync(cwdCrate)) {
+    return path.resolve(cwdCrate);
   }
 
-  // 4. System PATH fallback
+  // 5. System PATH fallback
   return binaryName;
 }

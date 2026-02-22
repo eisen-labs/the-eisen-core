@@ -68,6 +68,7 @@ pub async fn upstream_task(
             extract::extract_upstream(&line, &mut t);
         }
         agent_stdin.write_all(line.as_bytes()).await?;
+        agent_stdin.flush().await?;
         line.clear();
     }
     Ok(())
@@ -156,6 +157,7 @@ pub async fn downstream_task(
                     // Write the error response back to editor stdout so the
                     // ACP connection delivers it to the agent as a response
                     writer.write_all(error_line.as_bytes()).await?;
+                    writer.flush().await?;
                 }
 
                 // Broadcast BlockedAccess message to TCP listeners
@@ -178,6 +180,7 @@ pub async fn downstream_task(
             extract::extract_downstream(&line, &mut t);
         }
         writer.write_all(line.as_bytes()).await?;
+        writer.flush().await?;
         line.clear();
     }
     Ok(())

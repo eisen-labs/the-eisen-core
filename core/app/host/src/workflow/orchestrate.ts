@@ -49,6 +49,8 @@ export interface PendingApprovalData {
   runStart: number;
 }
 
+export type WarmClient = { client: ACPClient; sessionId: string; dispose: () => void };
+
 export interface OrchestrationConfig {
   workspacePath: string;
   userIntent: string;
@@ -56,7 +58,7 @@ export interface OrchestrationConfig {
   autoApprove: boolean;
   maxAgents: number;
   agents: OrchestratorAgents;
-  /** IPC send function — writes JSON events to stdout for Tauri. */
+  /** IPC send function -- writes JSON events to stdout for Tauri. */
   send: (msg: Record<string, unknown>) => void;
   /** NAPI-RS parser functions (optional, for workspace parsing). */
   napi?: {
@@ -65,24 +67,13 @@ export interface OrchestrationConfig {
     lookupSymbol: (workspace: string, name: string) => unknown;
     snapshot: (path: string) => unknown;
   };
-  /** Factory to create an ACP client for a given agent type. */
-  createACPClient?: (agentType: string) => ACPClient;
-  /**
-   * Called when the workflow needs user approval before executing.
-   * The caller should store the data and resume via executeAndEvaluate
-   * once the user approves.
-   */
+  /** Async factory that spawns a dedicated ACP client, connects, and creates a session. */
+  createACPClient?: (agentType: string) => Promise<WarmClient>;
+  /** Agent IDs that are actually installed and available on this machine. */
+  availableAgents?: string[];
   onPendingApproval?: (data: PendingApprovalData) => void;
-  /**
-   * Called just before an ACP client starts executing a subtask.
-   * The host uses this to register the client as a named tab.
-   */
-  onSubtaskStart?: (client: ACPClient, subtask: Subtask, agentId: string) => void;
-  /**
-   * Called after an ACP client finishes a subtask (successfully or not).
-   * The host uses this to write the output into the agent's chat tab.
-   */
-  onSubtaskComplete?: (client: ACPClient, subtask: Subtask, agentOutput: string) => void;
+  onSubtaskStart?: (sessionId: string, subtask: Subtask, agentId: string) => void;
+  onSubtaskComplete?: (sessionId: string, subtask: Subtask, agentOutput: string) => void;
 }
 
 export interface AgentAssignment {
@@ -167,6 +158,7 @@ export async function orchestrate(config: OrchestrationConfig): Promise<Orchestr
     context,
     workspacePath,
     cost,
+    config.availableAgents,
   );
 
   // -----------------------------------------------------------------------
@@ -243,6 +235,11 @@ export async function executeAndEvaluate(
       subtaskCount: batch.length,
     });
 
+    // Pre-warm all clients for this batch in parallel
+    const warmed = config.createACPClient
+      ? await warmClients(config, batch.map((b) => b.data))
+      : new Map<number, WarmClient>();
+
     // Run batch with concurrency limiter
     const semaphore = new Semaphore(maxAgents);
     const batchPromises = batch.map(async (item) => {
@@ -254,6 +251,7 @@ export async function executeAndEvaluate(
           context,
           config,
           cost,
+          warmed.get(item.data.subtaskIndex),
         );
       } finally {
         semaphore.release();
@@ -324,6 +322,7 @@ async function assignAgents(
   context: WorkspaceContext,
   workspacePath: string,
   cost: CostTracker,
+  availableAgents?: string[],
 ): Promise<AgentAssignment[]> {
   const assignments: AgentAssignment[] = [];
 
@@ -353,7 +352,7 @@ async function assignAgents(
       `Subtask: ${subtask.description}`,
       `Region: ${subtask.region}`,
       `Primary language: ${language}`,
-      `Available agents: opencode, claude-code, codex, gemini, goose, amp, aider`,
+      `Available agents: ${(availableAgents ?? ["opencode", "claude-code", "codex", "gemini", "goose", "amp", "aider"]).join(", ")}`,
       statsInfo ? `\nPerformance data:\n${statsInfo}` : "",
     ]
       .filter(Boolean)
@@ -380,6 +379,7 @@ async function executeSingleSubtask(
   context: WorkspaceContext,
   config: OrchestrationConfig,
   cost: CostTracker,
+  warm?: WarmClient,
 ): Promise<SubtaskResult> {
   const { subtask, subtaskIndex, agentId } = assignment;
   const { send } = config;
@@ -427,6 +427,7 @@ async function executeSingleSubtask(
         agentPrompt,
         subtask,
         cost,
+        warm,
       );
 
       send({
@@ -471,37 +472,50 @@ async function executeSingleSubtask(
   };
 }
 
+async function warmClients(
+  config: OrchestrationConfig,
+  assignments: AgentAssignment[],
+): Promise<Map<number, WarmClient>> {
+  const results = await Promise.allSettled(
+    assignments.map(async (a) => {
+      const c = await config.createACPClient!(a.agentId);
+      return [a.subtaskIndex, c] as [number, WarmClient];
+    }),
+  );
+  const map = new Map<number, WarmClient>();
+  for (const r of results) {
+    if (r.status === "fulfilled") map.set(r.value[0], r.value[1]);
+  }
+  return map;
+}
+
 async function executeViaACP(
   config: OrchestrationConfig,
   agentId: string,
   prompt: string,
   subtask: Subtask,
   cost: CostTracker,
+  warm?: WarmClient,
 ): Promise<string> {
-  const client = config.createACPClient!(agentId);
+  const w = warm ?? await config.createACPClient!(agentId);
 
-  config.onSubtaskStart?.(client, subtask, agentId);
+  config.onSubtaskStart?.(w.sessionId, subtask, agentId);
 
   try {
-    await client.connect();
-    await client.newSession(config.workspacePath);
-
-    const response = await client.sendMessage(prompt);
+    const response = await w.client.sendMessage(prompt, undefined, w.sessionId);
 
     cost.record(agentId, 0, subtask.description, subtask.description, subtask.region);
 
     const output = typeof response === "string" ? response : JSON.stringify(response);
-    config.onSubtaskComplete?.(client, subtask, output);
+    config.onSubtaskComplete?.(w.sessionId, subtask, output);
     return output;
   } catch (error) {
-    config.onSubtaskComplete?.(client, subtask, `Error: ${error instanceof Error ? error.message : String(error)}`);
+    config.onSubtaskComplete?.(w.sessionId, subtask, `Error: ${error instanceof Error ? error.message : String(error)}`);
     throw error;
   } finally {
     try {
-      client.dispose();
-    } catch {
-      // Ignore cleanup errors
-    }
+      w.dispose();
+    } catch {}
   }
 }
 

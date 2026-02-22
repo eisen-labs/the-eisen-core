@@ -1,11 +1,38 @@
 use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use tauri::Emitter;
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
+use eisen_core::flatten::flatten;
+use eisen_core::parser::tree::SymbolTree;
+
 struct HostProcess {
     stdin: std::process::ChildStdin,
-    _child: Child,
+    child: Child,
+}
+
+impl HostProcess {
+    /// Kill the host and all its children (agent subprocesses).
+    fn kill_tree(&mut self) {
+        #[cfg(unix)]
+        {
+            let pid = self.child.id() as i32;
+            // SIGTERM to the process group — gives the host time to dispose agents
+            unsafe { libc::killpg(pid, libc::SIGTERM); }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            // SIGKILL as fallback
+            unsafe { libc::killpg(pid, libc::SIGKILL); }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = self.child.kill();
+        }
+        let _ = self.child.wait();
+    }
 }
 
 struct AppState {
@@ -27,19 +54,23 @@ fn spawn_host(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let mut guard = state.host.lock().map_err(|e| e.to_string())?;
-    if guard.is_some() {
-        return Err("Host already running".into());
+    // Kill existing host if one is running (e.g. page reload / retry)
+    if let Some(mut old) = guard.take() {
+        old.kill_tree();
+        log::info!("Killed previous host process tree");
     }
 
     let bin = find_host_binary()?;
     log::info!("Spawning host: {} --cwd {}", bin.display(), cwd);
 
-    let mut child = Command::new(&bin)
-        .args(["--cwd", &cwd])
+    let mut cmd = Command::new(&bin);
+    cmd.args(["--cwd", &cwd])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    cmd.process_group(0); // New process group so kill_tree can kill all children
+    let mut child = cmd.spawn()
         .map_err(|e| format!("Failed to spawn host at {}: {}", bin.display(), e))?;
 
     let stdin = child.stdin.take().ok_or("Failed to capture host stdin")?;
@@ -81,7 +112,7 @@ fn spawn_host(
 
     *guard = Some(HostProcess {
         stdin,
-        _child: child,
+        child,
     });
     Ok(())
 }
@@ -92,7 +123,18 @@ fn send_to_host(message: String, state: tauri::State<'_, AppState>) -> Result<()
     let host = guard.as_mut().ok_or("Host not running")?;
     host.stdin
         .write_all(message.as_bytes())
+        .and_then(|_| host.stdin.flush())
         .map_err(|e| format!("Failed to write to host stdin: {}", e))
+}
+
+#[tauri::command]
+fn scan_workspace(cwd: String) -> Result<String, String> {
+    let root = Path::new(&cwd);
+    let tree = SymbolTree::init_tree(root)
+        .map_err(|e| format!("Failed to parse workspace: {e}"))?;
+    let snapshot = flatten(&tree, root, 1);
+    serde_json::to_string(&snapshot)
+        .map_err(|e| format!("Failed to serialize snapshot: {e}"))
 }
 
 fn find_host_binary() -> Result<std::path::PathBuf, String> {
@@ -172,7 +214,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_launch_cwd,
             spawn_host,
-            send_to_host
+            send_to_host,
+            scan_workspace
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -4,6 +4,7 @@ import { KVRow } from "./kv-row";
 
 export interface NodeMeta {
   kind: string;
+  badgeColor?: string;
   lines?: string;
   tokens?: string;
   action?: string;
@@ -26,7 +27,12 @@ export class Inspect {
     const label = id.includes("::") ? (id.split("::").pop() as string) : id.split("/").pop() || "/";
 
     this.content.append(
-      el("div", { className: "inspect-header" }, Badge(meta.kind), el("span", { className: "inspect-label" }, label)),
+      el(
+        "div",
+        { className: "inspect-header" },
+        Badge(meta.kind, meta.badgeColor),
+        el("span", { className: "inspect-label" }, label),
+      ),
     );
 
     if (meta.lines) this.content.append(KVRow("lines", meta.lines));
@@ -35,6 +41,21 @@ export class Inspect {
     if (meta.agents) this.content.append(KVRow("agents", meta.agents));
 
     this.content.append(el("div", { className: "inspect-footer" }, el("span", { className: "inspect-path" }, id)));
+  }
+
+  showSummary(counts: Record<string, number>, total: number): void {
+    this.content.innerHTML = "";
+    this.content.append(
+      el(
+        "div",
+        { className: "inspect-header" },
+        Badge("selection"),
+        el("span", { className: "inspect-label" }, `${total} nodes`),
+      ),
+    );
+    for (const [kind, count] of Object.entries(counts)) {
+      if (count > 0) this.content.append(KVRow(kind, String(count)));
+    }
   }
 
   hide(): void {

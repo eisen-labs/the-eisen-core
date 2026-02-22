@@ -1,72 +1,50 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-export interface HostMessage {
-  type: string;
-  [key: string]: unknown;
-}
-
-export type MessageHandler = (msg: any) => void;
-
 class IPC {
-  private running = false;
-  private handlers: Set<MessageHandler> = new Set();
+  private handler: ((msg: any) => void) | null = null;
   private unlisteners: UnlistenFn[] = [];
+  private alive = false;
 
-  async init(cwd: string) {
-    console.log(`[IPC] Spawning host with cwd: ${cwd}`);
+  async init(cwd: string, handler: (msg: any) => void) {
+    this.alive = false;
+    for (const unlisten of this.unlisteners) unlisten();
+    this.unlisteners = [];
+    this.handler = handler;
 
-    this.unlisteners.push(
-      await listen<string>("host-stdout", (event) => {
+    // Register data listeners before spawn to not miss early messages
+    const [stdoutUn, stderrUn] = await Promise.all([
+      listen<string>("host-stdout", (event) => {
+        this.alive = true;
         const line = event.payload;
         if (!line.trim()) return;
-        try {
-          const message = JSON.parse(line);
-          this.notify(message);
-        } catch (e) {
-          console.warn("[IPC] Failed to parse host stdout:", e, line.substring(0, 200));
+        try { this.handler?.(JSON.parse(line)); } catch (e) {
+          console.warn("[IPC] Bad JSON from host:", e);
         }
-      })
-    );
+      }),
+      listen<string>("host-stderr", (event) => {
+        console.error("[IPC host]", event.payload);
+      }),
+    ]);
 
-    this.unlisteners.push(
-      await listen<string>("host-stderr", (event) => {
-        console.error("[IPC eisen-host]", event.payload);
-      })
-    );
-
-    this.unlisteners.push(
-      await listen<number>("host-close", (event) => {
-        console.log(`[IPC] Host process exited with code ${event.payload}`);
-        this.running = false;
-      })
-    );
-
+    // spawn_host kills the previous host (blocks ~200ms) then starts a new one.
+    // Register close listener AFTER spawn so the old host's death doesn't trigger it.
     await invoke("spawn_host", { cwd });
-    this.running = true;
+
+    const closeUn = await listen<number>("host-close", () => {
+      if (!this.alive) return;
+      this.alive = false;
+      this.handler?.({ type: "hostDied" });
+    });
+
+    this.unlisteners = [stdoutUn, stderrUn, closeUn];
     this.send({ type: "ready" });
   }
 
   send(message: Record<string, unknown>) {
-    if (!this.running) {
-      console.warn("[IPC] Cannot send — host not spawned");
-      return;
-    }
-    const line = JSON.stringify(message) + "\n";
-    invoke("send_to_host", { message: line }).catch((e) => {
-      console.error("[IPC] Failed to send to host:", e);
+    invoke("send_to_host", { message: JSON.stringify(message) + "\n" }).catch((e) => {
+      console.warn("[IPC] Send failed:", e);
     });
-  }
-
-  onMessage(handler: MessageHandler) {
-    this.handlers.add(handler);
-    return () => this.handlers.delete(handler);
-  }
-
-  private notify(message: any) {
-    for (const handler of this.handlers) {
-      handler(message);
-    }
   }
 }
 
