@@ -41,7 +41,7 @@ export class Chat {
   private msgMap = new Map<string, { from: string; text: string }[]>();
   private metaMap = new Map<string, SessionMeta>();
   private streamEl: HTMLElement | null = null;
-  private streamText = "";
+  private streamMap = new Map<string, string>();
 
   private files: FileSearchResult[] = [];
   private fileIdx = -1;
@@ -247,8 +247,8 @@ export class Chat {
   }
 
   streamStart(id: string): void {
+    this.streamMap.set(id, "");
     if (id !== this.activeId) return;
-    this.streamText = "";
     this.streamEl = (
       <div className="px-lg py-md text-sm whitespace-pre-wrap break-words text-foreground bg-raised mr-8 rounded-xl rounded-bl-sm" />
     ) as HTMLElement;
@@ -256,16 +256,30 @@ export class Chat {
   }
 
   streamChunk(text: string, id: string): void {
+    const next = (this.streamMap.get(id) ?? "") + text;
+    this.streamMap.set(id, next);
     if (id !== this.activeId || !this.streamEl) return;
-    this.streamText += text;
-    this.streamEl.textContent = this.streamText;
+    this.streamEl.textContent = next;
     this.messages.scrollTop = this.messages.scrollHeight;
   }
 
   streamEnd(id: string): void {
+    const text = this.streamMap.get(id) ?? "";
+    this.streamMap.delete(id);
+    if (text) {
+      let list = this.msgMap.get(id);
+      if (!list) {
+        list = [];
+        this.msgMap.set(id, list);
+      }
+      list.push({ from: "assistant", text });
+    }
     if (id !== this.activeId) return;
+    if (!this.streamEl && text) {
+      this.appendMsg({ from: "assistant", text });
+      this.messages.scrollTop = this.messages.scrollHeight;
+    }
     this.streamEl = null;
-    this.streamText = "";
   }
 
   addMessage(msg: { from: string; text: string; instanceId?: string }): void {

@@ -90,7 +90,7 @@ export class CoreClient {
     this.send(payload);
   }
 
-  async rpc(method: string, params?: Record<string, unknown>, timeoutMs = 30000): Promise<any> {
+  async rpc(method: string, params?: Record<string, unknown>, timeoutMs = 5000): Promise<any> {
     if (!this.socket) {
       throw new Error("core socket not connected");
     }

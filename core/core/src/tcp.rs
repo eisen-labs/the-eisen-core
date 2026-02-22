@@ -1,11 +1,12 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Result;
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, Mutex};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::orchestrator::OrchestratorAggregator;
 use crate::session_registry::SessionRegistry;
@@ -229,6 +230,9 @@ pub async fn handle_client(
                                     method = method.as_str(),
                                     "received client message"
                                 );
+                                let rpc_id = id.clone();
+                                let rpc_method = method.clone();
+                                let rpc_start = Instant::now();
                                 let response = handle_rpc_request(
                                     id,
                                     method,
@@ -237,12 +241,39 @@ pub async fn handle_client(
                                     &tracker_for_reader,
                                 )
                                 .await;
+                                let rpc_elapsed_ms = rpc_start.elapsed().as_millis();
+                                if rpc_elapsed_ms >= 1000 {
+                                    warn!(
+                                        method = rpc_method.as_str(),
+                                        id = rpc_id.as_str(),
+                                        elapsed_ms = rpc_elapsed_ms,
+                                        "rpc handled slowly"
+                                    );
+                                } else {
+                                    debug!(
+                                        method = rpc_method.as_str(),
+                                        id = rpc_id.as_str(),
+                                        elapsed_ms = rpc_elapsed_ms,
+                                        "rpc handled"
+                                    );
+                                }
                                 let json = match serde_json::to_string(&response) {
                                     Ok(j) => j + "\n",
                                     Err(_) => break,
                                 };
+                                debug!(
+                                    method = rpc_method.as_str(),
+                                    id = rpc_id.as_str(),
+                                    bytes = json.len(),
+                                    "sending rpc response"
+                                );
                                 let mut w = writer_for_requests.lock().await;
                                 if w.write_all(json.as_bytes()).await.is_err() {
+                                    warn!(
+                                        method = rpc_method.as_str(),
+                                        id = rpc_id.as_str(),
+                                        "failed to write rpc response"
+                                    );
                                     break;
                                 }
                             }
@@ -404,6 +435,7 @@ async fn handle_rpc_request(
             }
         }
         "create_session" => {
+            let rpc_start = Instant::now();
             let parsed = match params {
                 Some(value) => {
                     serde_json::from_value::<CreateSessionParams>(value).map_err(|e| e.to_string())
@@ -414,28 +446,40 @@ async fn handle_rpc_request(
                 Ok(p) => p,
                 Err(err) => return RpcResponse::error(id, 400, err),
             };
-            let result = registry.lock().await.create_session(
-                params.agent_id,
-                params.session_id,
-                params.mode,
-                params.model,
-                params.summary,
-                params.history,
-                params.context,
-                params.providers,
+            let registry_start = Instant::now();
+            let result = {
+                let mut reg = registry.lock().await;
+                reg.create_session(
+                    params.agent_id,
+                    params.session_id,
+                    params.mode,
+                    params.model,
+                    params.summary,
+                    params.history,
+                    params.context,
+                    params.providers,
+                )
+            };
+            debug!(
+                elapsed_ms = registry_start.elapsed().as_millis(),
+                "create_session registry update complete"
             );
             match result {
                 Ok(session) => {
-                    tracker
-                        .lock()
-                        .await
-                        .set_session_mode(&session.session_id, session.mode);
+                    let session_id = session.session_id.clone();
+                    let mode = session.mode;
+                    tracker.lock().await.set_session_mode(&session_id, mode);
+                    let elapsed_ms = rpc_start.elapsed().as_millis();
+                    debug!(elapsed_ms, "create_session handled");
                     match serde_json::to_value(session) {
                         Ok(value) => RpcResponse::result(id, value),
                         Err(err) => RpcResponse::error(id, 500, err.to_string()),
                     }
                 }
-                Err(err) => RpcResponse::error(id, 500, err.to_string()),
+                Err(err) => {
+                    warn!(elapsed_ms = rpc_start.elapsed().as_millis(), "create_session failed");
+                    RpcResponse::error(id, 500, err.to_string())
+                }
             }
         }
         "close_session" => {
@@ -456,6 +500,7 @@ async fn handle_rpc_request(
             }
         }
         "set_active_session" => {
+            let rpc_start = Instant::now();
             let parsed = match params {
                 Some(value) => {
                     serde_json::from_value::<SessionKeyParams>(value).map_err(|e| e.to_string())
@@ -467,20 +512,46 @@ async fn handle_rpc_request(
                 Err(err) => return RpcResponse::error(id, 400, err),
             };
             let key = SessionKey::new(&params.agent_id, &params.session_id);
-            match registry.lock().await.set_active_session(key.clone()) {
+            let registry_start = Instant::now();
+            let (result, session) = {
+                let mut reg = registry.lock().await;
+                let result = reg.set_active_session(key.clone());
+                let session = if matches!(result, Ok(true)) {
+                    reg.get_session_state(&key)
+                } else {
+                    None
+                };
+                (result, session)
+            };
+            debug!(
+                elapsed_ms = registry_start.elapsed().as_millis(),
+                "set_active_session registry update complete"
+            );
+            match result {
                 Ok(true) => {
-                    if let Some(session) = registry.lock().await.get_session_state(&key) {
+                    if let Some(session) = session {
+                        let session_id = session.session_id.clone();
+                        let mode = session.mode;
                         let mut t = tracker.lock().await;
-                        t.set_session_id(session.session_id.clone());
-                        t.set_session_mode(&session.session_id, session.mode);
+                        t.set_session_id(session_id.clone());
+                        t.set_session_mode(&session_id, mode);
                     }
+                    let elapsed_ms = rpc_start.elapsed().as_millis();
+                    debug!(elapsed_ms, "set_active_session handled");
                     RpcResponse::result(id, serde_json::json!({"active": true}))
                 }
-                Ok(false) => RpcResponse::error(id, 404, "session not found".to_string()),
-                Err(err) => RpcResponse::error(id, 500, err.to_string()),
+                Ok(false) => {
+                    debug!(elapsed_ms = rpc_start.elapsed().as_millis(), "set_active_session not found");
+                    RpcResponse::error(id, 404, "session not found".to_string())
+                }
+                Err(err) => {
+                    warn!(elapsed_ms = rpc_start.elapsed().as_millis(), "set_active_session failed");
+                    RpcResponse::error(id, 500, err.to_string())
+                }
             }
         }
         "set_orchestrator_providers" => {
+            let rpc_start = Instant::now();
             let parsed = match params {
                 Some(value) => serde_json::from_value::<SetOrchestratorProvidersParams>(value)
                     .map_err(|e| e.to_string()),
@@ -491,23 +562,41 @@ async fn handle_rpc_request(
                 Err(err) => return RpcResponse::error(id, 400, err),
             };
             let key = SessionKey::new(&params.agent_id, &params.session_id);
-            let result = registry
-                .lock()
-                .await
-                .set_orchestrator_providers(&key, params.providers);
+            let registry_start = Instant::now();
+            let result = {
+                let mut reg = registry.lock().await;
+                reg.set_orchestrator_providers(&key, params.providers)
+            };
+            debug!(
+                elapsed_ms = registry_start.elapsed().as_millis(),
+                "set_orchestrator_providers registry update complete"
+            );
             match result {
                 Ok(Some(session)) => {
-                    tracker
-                        .lock()
-                        .await
-                        .set_session_mode(&session.session_id, session.mode);
+                    let session_id = session.session_id.clone();
+                    let mode = session.mode;
+                    tracker.lock().await.set_session_mode(&session_id, mode);
+                    let elapsed_ms = rpc_start.elapsed().as_millis();
+                    debug!(elapsed_ms, "set_orchestrator_providers handled");
                     match serde_json::to_value(session) {
                         Ok(value) => RpcResponse::result(id, value),
                         Err(err) => RpcResponse::error(id, 500, err.to_string()),
                     }
                 }
-                Ok(None) => RpcResponse::error(id, 404, "session not found".to_string()),
-                Err(err) => RpcResponse::error(id, 500, err.to_string()),
+                Ok(None) => {
+                    debug!(
+                        elapsed_ms = rpc_start.elapsed().as_millis(),
+                        "set_orchestrator_providers not found"
+                    );
+                    RpcResponse::error(id, 404, "session not found".to_string())
+                }
+                Err(err) => {
+                    warn!(
+                        elapsed_ms = rpc_start.elapsed().as_millis(),
+                        "set_orchestrator_providers failed"
+                    );
+                    RpcResponse::error(id, 500, err.to_string())
+                }
             }
         }
         "get_session_state" => {

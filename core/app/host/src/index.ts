@@ -162,6 +162,7 @@ const orchestrator = new EisenOrchestrator();
 const coreClients = new Map<string, CoreClient>();
 const useLegacyGraph = false;
 const fileSearchService = new FileSearchService(cwd);
+const useLegacyGraph = false;
 
 const SELECTED_AGENT_KEY = "eisen.selectedAgent";
 const SELECTED_MODE_KEY = "eisen.selectedMode";
@@ -184,20 +185,26 @@ function agentShortName(agentType: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Agent instances
+// Agents + sessions
 // ---------------------------------------------------------------------------
 
 type SessionMode = "single_agent" | "orchestrator";
 
-interface AgentInstance {
+interface ProviderClient {
+  agentType: string;
+  client: ACPClient;
+  instanceId: string | null;
+  connected: boolean;
+  core: CoreClient | null;
+}
+
+interface AgentSession {
   key: string;
   agentType: string;
   label: string;
   sessionMode: SessionMode;
-  client: ACPClient;
-  acpSessionId: string | null;
+  acpSessionId: string;
   coreSessionId: string | null;
-  hasAcpSession: boolean;
   hasRestoredModeModel: boolean;
   stderrBuffer: string;
   streamingText: string;
@@ -225,45 +232,27 @@ interface ManagedTerminal {
   exitResolve: () => void;
 }
 
-const agentInstances = new Map<string, AgentInstance>();
+const providerClients = new Map<string, ProviderClient>();
+const agentSessions = new Map<string, AgentSession>();
+const sessionByAcpId = new Map<string, string>();
 let currentInstanceKey: string | null = null;
 const instanceCounters = new Map<string, number>();
 let nextColorIndex = 0;
-const connectedInstanceIds = new Set<string>();
 const terminals = new Map<string, ManagedTerminal>();
 let terminalCounter = 0;
 
-/**
- * Insertion-order list of ALL instance keys (both virtual orchestrators and
- * regular agent instances), used to preserve chronological tab order while
- * still grouping each orchestrator's sub-agents directly to its right.
- * Sub-agents (with orchestratorKey set) are NOT added here; they are injected
- * inline after their parent when building the display list.
- */
-const instanceOrder: string[] = [];
-
-// ---------------------------------------------------------------------------
-// Virtual orchestrator instances (no ACP agent, pure Mastra workflow)
-// ---------------------------------------------------------------------------
-
-interface VirtualInstance {
-  key: string;
-  label: string;
-  agentType: "orchestrator";
-  color: string;
-  isStreaming: boolean;
-  /** Set when the orchestration workflow is waiting for user approval. */
-  pendingApproval?: PendingApprovalData & { config: OrchestrationConfig };
+function getActiveSession(): AgentSession | undefined {
+  return currentInstanceKey ? agentSessions.get(currentInstanceKey) : undefined;
 }
 
-const virtualInstances = new Map<string, VirtualInstance>();
-
-function getActiveInstance(): AgentInstance | undefined {
-  return currentInstanceKey ? agentInstances.get(currentInstanceKey) : undefined;
+function getProviderForSession(session: AgentSession): ProviderClient | undefined {
+  return providerClients.get(session.agentType);
 }
 
-function getActiveClient(): ACPClient | null {
-  return getActiveInstance()?.client ?? null;
+function getActiveProvider(): ProviderClient | null {
+  const session = getActiveSession();
+  if (!session) return null;
+  return providerClients.get(session.agentType) ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -281,45 +270,16 @@ interface InstanceInfo {
 
 function getInstanceList(): InstanceInfo[] {
   const list: InstanceInfo[] = [];
-
-  for (const key of instanceOrder) {
-    const vi = virtualInstances.get(key);
-    if (vi) {
-      // Orchestrator tab followed immediately by its sub-agents.
-      list.push({
-        key: vi.key,
-        label: vi.label,
-        agentType: vi.agentType,
-        color: vi.color,
-        connected: true,
-        isStreaming: vi.isStreaming,
-      });
-      for (const inst of agentInstances.values()) {
-        if (inst.orchestratorKey === vi.key) {
-          list.push({
-            key: inst.key,
-            label: inst.label,
-            agentType: inst.agentType,
-            color: inst.color,
-            connected: inst.client.isConnected(),
-            isStreaming: inst.isStreaming,
-          });
-        }
-      }
-      continue;
-    }
-
-    const inst = agentInstances.get(key);
-    if (inst && !inst.orchestratorKey) {
-      list.push({
-        key: inst.key,
-        label: inst.label,
-        agentType: inst.agentType,
-        color: inst.color,
-        connected: inst.client.isConnected(),
-        isStreaming: inst.isStreaming,
-      });
-    }
+  for (const inst of agentSessions.values()) {
+    const provider = providerClients.get(inst.agentType);
+    list.push({
+      key: inst.key,
+      label: inst.label,
+      agentType: inst.agentType,
+      color: inst.color,
+      connected: provider?.connected ?? false,
+      isStreaming: inst.isStreaming,
+    });
   }
 
   return list;
@@ -333,68 +293,45 @@ function sendInstanceList(): void {
   });
 }
 
-function updateGraphSelection(): void {
-  const inst = getActiveInstance();
-  if (!inst) return;
-  const coreSessionId = inst.coreSessionId;
-  if (!coreSessionId) return;
-  const core = coreClients.get(inst.key);
-  if (!core) return;
-  core.setStreamFilter({ sessionId: coreSessionId });
-  core.requestSnapshot(coreSessionId);
-}
+function setupClientHandlers(provider: ProviderClient): void {
+  const { client } = provider;
 
-function setupClientHandlers(client: ACPClient, instanceKey: string): void {
   client.setOnStateChange((state) => {
-    const inst = agentInstances.get(instanceKey);
     console.error(
-      `[Host] Instance "${instanceKey}" (type=${inst?.agentType}) state -> "${state}" (instanceId=${client.instanceId}, isActive=${currentInstanceKey === instanceKey})`,
+      `[Host] Provider "${provider.agentType}" state -> "${state}" (instanceId=${client.instanceId}, active=${currentInstanceKey})`,
     );
 
     if (state === "connected") {
-      const instId = client.instanceId;
-      if (instId) {
-        connectedInstanceIds.add(instId);
-        // Register with orchestrator for graph visualization
-        registerAgentWithOrchestrator(client);
-      }
-      sendInstanceList();
+      provider.connected = true;
+      provider.instanceId = client.instanceId;
     }
     if (state === "disconnected") {
-      const instId = client.instanceId;
-      if (instId && connectedInstanceIds.has(instId)) {
-        connectedInstanceIds.delete(instId);
-        orchestrator.removeAgent(instId);
-      }
-      sendInstanceList();
+      provider.connected = false;
+      provider.instanceId = null;
     }
 
-    if (currentInstanceKey === instanceKey) {
-      send({ type: "connectionState", state });
+    sendInstanceList();
+    if (currentInstanceKey) {
+      const active = agentSessions.get(currentInstanceKey);
+      if (active && active.agentType === provider.agentType) {
+        send({ type: "connectionState", state });
+      }
     }
   });
 
   client.setOnSessionUpdate((update: SessionNotification) => {
-    if (currentInstanceKey === instanceKey) {
-      handleSessionUpdate(update);
-    } else {
-      const bgInst = agentInstances.get(instanceKey);
-      if (bgInst && update.update?.sessionUpdate === "agent_message_chunk" && update.update?.content?.type === "text") {
-        const chunk = update.update.content.text as string;
-        bgInst.streamingText += chunk;
-        // Forward the chunk with instanceId so the frontend can buffer it per-tab.
-        send({ type: "streamChunk", text: chunk, instanceId: instanceKey });
-      }
-    }
+    const sessionId = update.sessionId ?? client.getActiveSessionId();
+    if (!sessionId) return;
+    const sessionKey = sessionByAcpId.get(sessionId);
+    if (!sessionKey) return;
+    handleSessionUpdate(update, sessionKey);
   });
 
   client.setOnStderr((text: string) => {
-    const inst = agentInstances.get(instanceKey);
-    if (inst) {
-      inst.stderrBuffer += text;
-    }
-    if (currentInstanceKey === instanceKey) {
-      handleStderr(text, instanceKey);
+    const active = getActiveSession();
+    if (active && active.agentType === provider.agentType) {
+      active.stderrBuffer += text;
+      handleStderr(text, active.key);
     }
   });
 
@@ -427,18 +364,50 @@ function setupClientHandlers(client: ACPClient, instanceKey: string): void {
   });
 }
 
-function createInstance(agentType: string, sessionMode: SessionMode, orchestratorKey?: string): AgentInstance {
-  if (agentInstances.size >= MAX_AGENT_INSTANCES) {
+function getOrCreateProvider(agentType: string): ProviderClient {
+  const existing = providerClients.get(agentType);
+  if (existing) return existing;
+
+  const agent = getAgent(agentType);
+  if (!agent) {
+    throw new Error(`Unknown agent: ${agentType}`);
+  }
+
+  const hostDir = process.execPath;
+  const client = new ACPClient({
+    agentConfig: agent,
+    hostDir: hostDir,
+  });
+
+  const provider: ProviderClient = {
+    agentType,
+    client,
+    instanceId: null,
+    connected: false,
+    core: null,
+  };
+
+  setupClientHandlers(provider);
+  providerClients.set(agentType, provider);
+  return provider;
+}
+
+async function createSession(agentType: string, sessionMode: SessionMode): Promise<AgentSession> {
+  if (agentSessions.size >= MAX_AGENT_INSTANCES) {
     throw new Error(
       `Maximum number of concurrent agents (${MAX_AGENT_INSTANCES}) reached. ` +
         `Close an existing agent tab before spawning a new one.`,
     );
   }
 
-  const agent = getAgent(agentType);
-  if (!agent) {
-    throw new Error(`Unknown agent: ${agentType}`);
+  const provider = getOrCreateProvider(agentType);
+  if (!provider.client.isConnected()) {
+    await provider.client.connect();
   }
+
+  const workingDir = getCwd();
+  const resp = await provider.client.newSession(workingDir);
+  const acpSessionId = resp.sessionId;
 
   const count = (instanceCounters.get(agentType) ?? 0) + 1;
   instanceCounters.set(agentType, count);
@@ -448,21 +417,13 @@ function createInstance(agentType: string, sessionMode: SessionMode, orchestrato
   const color = AGENT_COLORS[nextColorIndex % AGENT_COLORS.length];
   nextColorIndex++;
 
-  const hostDir = process.execPath;
-  const client = new ACPClient({
-    agentConfig: agent,
-    hostDir: hostDir,
-  });
-
-  const instance: AgentInstance = {
+  const instance: AgentSession = {
     key,
     agentType,
     label: key,
     sessionMode,
-    client,
-    acpSessionId: null,
+    acpSessionId,
     coreSessionId: null,
-    hasAcpSession: false,
     hasRestoredModeModel: false,
     stderrBuffer: "",
     streamingText: "",
@@ -474,10 +435,141 @@ function createInstance(agentType: string, sessionMode: SessionMode, orchestrato
     orchestratorKey,
   };
 
-  setupClientHandlers(client, key);
-  agentInstances.set(key, instance);
-  if (!orchestratorKey) instanceOrder.push(key);
+  agentSessions.set(key, instance);
+  sessionByAcpId.set(acpSessionId, key);
   return instance;
+}
+
+function normalizeAction(action?: string): "read" | "write" | "search" {
+  if (action === "write") return "write";
+  if (action === "search") return "search";
+  return "read";
+}
+
+function toMergedSnapshot(msg: any) {
+  const nodes: Record<string, any> = {};
+  if (msg?.nodes && typeof msg.nodes === "object") {
+    for (const [path, node] of Object.entries<any>(msg.nodes)) {
+      const action = normalizeAction(node?.last_action);
+      nodes[path] = {
+        inContext: Boolean(node?.in_context),
+        changed: action === "write",
+        lastAction: action,
+      };
+    }
+  }
+  return {
+    type: "mergedSnapshot",
+    seq: msg?.seq ?? 0,
+    nodes,
+    calls: [],
+    agents: [],
+  };
+}
+
+function toMergedDelta(msg: any) {
+  const updates: Array<Record<string, any>> = [];
+  if (Array.isArray(msg?.updates)) {
+    for (const u of msg.updates) {
+      const action = normalizeAction(u?.last_action);
+      updates.push({
+        id: u?.path,
+        action,
+        inContext: u?.in_context,
+        changed: action === "write",
+      });
+    }
+  }
+  if (Array.isArray(msg?.removed)) {
+    for (const path of msg.removed) {
+      updates.push({ id: path, action: "remove" });
+    }
+  }
+  return {
+    type: "mergedDelta",
+    seq: msg?.seq ?? 0,
+    updates,
+    agents: [],
+  };
+}
+
+function updateGraphSelection(): void {
+  const active = getActiveSession();
+  if (!active) return;
+  const provider = providerClients.get(active.agentType);
+  if (!provider?.core || !active.coreSessionId) return;
+  provider.core.setStreamFilter({ sessionId: active.coreSessionId });
+  provider.core.requestSnapshot(active.coreSessionId);
+}
+
+async function ensureCoreClient(provider: ProviderClient): Promise<CoreClient | null> {
+  if (provider.core) return provider.core;
+  let port: number;
+  try {
+    port = await provider.client.waitForTcpPort();
+  } catch {
+    return null;
+  }
+  const core = new CoreClient((msg) => {
+    const active = getActiveSession();
+    if (!active) return;
+    if (active.agentType !== provider.agentType) return;
+    if (!active.coreSessionId || msg?.session_id !== active.coreSessionId) return;
+
+    if (msg?.type === "snapshot") {
+      send(toMergedSnapshot(msg));
+    } else if (msg?.type === "delta") {
+      send(toMergedDelta(msg));
+    } else if (msg?.type === "usage") {
+      send({ type: "usageUpdate", used: msg.used, size: msg.size, cost: msg.cost });
+    }
+  });
+  core.connect(port);
+  provider.core = core;
+  return core;
+}
+
+async function ensureCoreSession(session: AgentSession): Promise<void> {
+  const provider = providerClients.get(session.agentType);
+  if (!provider) return;
+  if (!provider.client.isConnected()) {
+    await provider.client.connect();
+  }
+  const core = await ensureCoreClient(provider);
+  if (!core) return;
+
+  const agentId = provider.client.instanceId;
+  if (!agentId) return;
+
+  if (session.sessionMode === "single_agent") {
+    session.coreSessionId = session.acpSessionId;
+  }
+
+  if (!session.coreSessionId) {
+    session.coreSessionId = `${agentId}-${Date.now().toString(36)}`;
+  }
+
+  const created = await core.rpc("create_session", {
+    agent_id: agentId,
+    session_id: session.coreSessionId,
+    mode: session.sessionMode,
+  });
+  session.coreSessionId = created?.session_id ?? session.coreSessionId;
+
+  if (session.sessionMode === "orchestrator") {
+    await core.rpc("set_orchestrator_providers", {
+      agent_id: agentId,
+      session_id: session.coreSessionId,
+      providers: [{ agent_id: agentId, session_id: session.acpSessionId }],
+    });
+  }
+
+  await core.rpc("set_active_session", { agent_id: agentId, session_id: session.coreSessionId });
+
+  if (currentInstanceKey === session.key) {
+    core.setStreamFilter({ sessionId: session.coreSessionId });
+    core.requestSnapshot(session.coreSessionId);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -648,24 +740,30 @@ async function doEnsureCoreSession(inst: AgentInstance): Promise<void> {
 // Session update handler
 // ---------------------------------------------------------------------------
 
-function handleSessionUpdate(notification: SessionNotification): void {
+function handleSessionUpdate(notification: SessionNotification, sessionKey: string): void {
   const update = notification.update;
-  const inst = getActiveInstance();
+  const inst = agentSessions.get(sessionKey);
+  if (!inst) return;
+  const isActive = currentInstanceKey === sessionKey;
 
   if (update.sessionUpdate === "agent_message_chunk") {
     if (update.content.type === "text") {
-      if (inst) inst.streamingText += update.content.text;
-      send({ type: "streamChunk", text: update.content.text, instanceId: currentInstanceKey });
+      inst.streamingText += update.content.text;
+      if (isActive) {
+        send({ type: "streamChunk", text: update.content.text, instanceId: sessionKey });
+      }
     }
   } else if (update.sessionUpdate === "tool_call") {
-    send({
-      type: "toolCallStart",
-      name: update.title,
-      toolCallId: update.toolCallId,
-      kind: update.kind,
-    });
+    if (isActive) {
+      send({
+        type: "toolCallStart",
+        name: update.title,
+        toolCallId: update.toolCallId,
+        kind: update.kind,
+      });
+    }
   } else if (update.sessionUpdate === "tool_call_update") {
-    if (update.status === "completed" || update.status === "failed") {
+    if (isActive && (update.status === "completed" || update.status === "failed")) {
       let terminalOutput: string | undefined;
       if (update.content && update.content.length > 0) {
         const terminalContent = update.content.find((c: { type: string }) => c.type === "terminal");
@@ -686,25 +784,33 @@ function handleSessionUpdate(notification: SessionNotification): void {
       });
     }
   } else if (update.sessionUpdate === "current_mode_update") {
-    send({ type: "modeUpdate", modeId: update.currentModeId });
+    if (isActive) {
+      send({ type: "modeUpdate", modeId: update.currentModeId });
+    }
   } else if (update.sessionUpdate === "available_commands_update") {
-    send({
-      type: "availableCommands",
-      commands: update.availableCommands,
-    });
+    if (isActive) {
+      send({
+        type: "availableCommands",
+        commands: update.availableCommands,
+      });
+    }
   } else if (update.sessionUpdate === "plan") {
-    send({ type: "plan", plan: { entries: update.entries } });
+    if (isActive) {
+      send({ type: "plan", plan: { entries: update.entries } });
+    }
   } else if (update.sessionUpdate === "agent_thought_chunk") {
-    if (update.content?.type === "text") {
+    if (isActive && update.content?.type === "text") {
       send({ type: "thoughtChunk", text: update.content.text });
     }
   } else if (update.sessionUpdate === "usage_update") {
-    send({
-      type: "usageUpdate",
-      used: update.used,
-      size: update.size,
-      cost: update.cost,
-    });
+    if (isActive) {
+      send({
+        type: "usageUpdate",
+        used: update.used,
+        size: update.size,
+        cost: update.cost,
+      });
+    }
   }
 }
 
@@ -713,7 +819,7 @@ function handleSessionUpdate(notification: SessionNotification): void {
 // ---------------------------------------------------------------------------
 
 function handleStderr(_text: string, instanceKey: string): void {
-  const inst = agentInstances.get(instanceKey);
+  const inst = agentSessions.get(instanceKey);
   if (!inst) return;
 
   // Check for rate limit errors
@@ -922,25 +1028,19 @@ async function handleReleaseTerminal(params: ReleaseTerminalRequest): Promise<Re
 // ---------------------------------------------------------------------------
 
 function switchToInstance(instanceKey: string): void {
-    if (instanceKey === currentInstanceKey) return;
-
-    // Handle virtual orchestrator instances
-    const vi = virtualInstances.get(instanceKey);
-    if (vi) {
-      currentInstanceKey = instanceKey;
-      globalState.update(SELECTED_AGENT_KEY, "orchestrator");
-      send({ type: "instanceChanged", instanceKey, isStreaming: vi.isStreaming });
-      send({ type: "connectionState", state: "connected" });
-      sendInstanceList();
-      send({ type: "sessionMetadata", modes: null, models: null });
-      return;
-    }
-
-    const target = agentInstances.get(instanceKey);
-    if (!target) return;
+  if (instanceKey === currentInstanceKey) return;
+  const target = agentSessions.get(instanceKey);
+  if (!target) return;
+  const provider = providerClients.get(target.agentType);
 
   currentInstanceKey = instanceKey;
   globalState.update(SELECTED_AGENT_KEY, target.agentType);
+
+  if (provider && target.acpSessionId) {
+    try {
+      provider.client.setActiveSession(target.acpSessionId);
+    } catch {}
+  }
 
   send({
     type: "instanceChanged",
@@ -949,119 +1049,57 @@ function switchToInstance(instanceKey: string): void {
   });
   send({
     type: "connectionState",
-    state: target.client.getState(),
+    state: provider?.client.getState() ?? "disconnected",
   });
   sendInstanceList();
 
-    if (target.client.isConnected()) {
-      sendSessionMetadata();
-    } else {
-      send({ type: "sessionMetadata", modes: null, models: null });
-    }
+  if (provider?.client.isConnected()) {
+    sendSessionMetadata(target.key);
+  } else {
+    send({ type: "sessionMetadata", modes: null, models: null });
+  }
 
-    ensureCoreSession(target).catch((e) =>
-      console.error("[Host] Failed to initialize core session:", e),
-    );
-    updateGraphSelection();
+  ensureCoreSession(target).catch((e) =>
+    console.error("[Host] Failed to initialize core session:", e),
+  );
+  updateGraphSelection();
 }
 
 // ---------------------------------------------------------------------------
 // Message handlers
 // ---------------------------------------------------------------------------
 
-function handleSpawnOrchestratorVirtual(): void {
-  const count = (instanceCounters.get("orchestrator") ?? 0) + 1;
-  instanceCounters.set("orchestrator", count);
-  const key = `orch${count}`;
-  const color = AGENT_COLORS[nextColorIndex % AGENT_COLORS.length];
-  nextColorIndex++;
-
-  const vi: VirtualInstance = { key, label: key, agentType: "orchestrator", color, isStreaming: false };
-  virtualInstances.set(key, vi);
-  instanceOrder.push(key);
-
-  currentInstanceKey = key;
-  globalState.update(SELECTED_AGENT_KEY, "orchestrator");
-  send({ type: "instanceChanged", instanceKey: key, isStreaming: false });
-  send({ type: "connectionState", state: "connected" });
-  sendInstanceList();
-  send({ type: "sessionMetadata", modes: null, models: null });
-
-  const model = process.env.EISEN_ORCHESTRATOR_MODEL ?? "anthropic/claude-sonnet-4-20250514";
-  const displayModel = model.split("/").pop() ?? model;
-  send({
-    method: "chatMessage",
-    params: { from: "agent", text: `I'm ${displayModel}, ready to orchestrate`, instanceId: key },
-  });
-}
-
-function handleSpawnAgent(agentType: string, sessionMode: SessionMode = "single_agent"): void {
-    if (agentType === "orchestrator") {
-      handleSpawnOrchestratorVirtual();
-      return;
-    }
-
-    const agent = getAgent(agentType);
-    if (!agent) return;
-
-    try {
-      const instance = createInstance(agentType, sessionMode);
-      switchToInstance(instance.key);
-      ensureCoreSession(instance).catch((e) =>
-        console.error("[Host] Failed to initialize core session:", e),
-      );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to spawn agent";
-      send({ type: "error", text: message });
+async function handleSpawnAgent(agentType: string, sessionMode: SessionMode = "single_agent"): Promise<void> {
+  try {
+    const instance = await createSession(agentType, sessionMode);
+    switchToInstance(instance.key);
+    await ensureCoreSession(instance);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to spawn agent";
+    send({ type: "error", text: message });
   }
 }
 
 function handleCloseInstance(instanceKey: string): void {
-  // Handle virtual orchestrator instances
-  if (virtualInstances.has(instanceKey)) {
-    virtualInstances.delete(instanceKey);
-    const viOrderIdx = instanceOrder.indexOf(instanceKey);
-    if (viOrderIdx !== -1) instanceOrder.splice(viOrderIdx, 1);
-    if (currentInstanceKey === instanceKey) {
-      const remaining = [...Array.from(agentInstances.keys()), ...Array.from(virtualInstances.keys())];
-      if (remaining.length > 0) {
-        switchToInstance(remaining[remaining.length - 1]);
-      } else {
-        currentInstanceKey = null;
-        instanceCounters.clear();
-        nextColorIndex = 0;
-        send({ type: "instanceChanged", instanceKey: null, isStreaming: false });
-      }
-    }
-    sendInstanceList();
-    return;
+  const instance = agentSessions.get(instanceKey);
+  if (!instance) return;
+
+  const provider = providerClients.get(instance.agentType);
+  if (provider?.core && provider.instanceId && instance.coreSessionId) {
+    provider.core
+      .rpc("close_session", {
+        agent_id: provider.instanceId,
+        session_id: instance.coreSessionId,
+      })
+      .catch(() => {});
   }
 
-    const instance = agentInstances.get(instanceKey);
-    if (!instance) return;
+  sessionByAcpId.delete(instance.acpSessionId);
 
-  const instId = instance.client.instanceId;
-  try {
-    instance.client.dispose();
-  } catch {}
-
-  if (instId && connectedInstanceIds.has(instId)) {
-    connectedInstanceIds.delete(instId);
-    orchestrator.removeAgent(instId);
-  }
-
-  const core = coreClients.get(instanceKey);
-  if (core) {
-    core.disconnect();
-    coreClients.delete(instanceKey);
-  }
-
-  agentInstances.delete(instanceKey);
-  const orderIdx = instanceOrder.indexOf(instanceKey);
-  if (orderIdx !== -1) instanceOrder.splice(orderIdx, 1);
+  agentSessions.delete(instanceKey);
 
   if (currentInstanceKey === instanceKey) {
-    const remaining = [...Array.from(agentInstances.keys()), ...Array.from(virtualInstances.keys())];
+    const remaining = Array.from(agentSessions.keys());
     if (remaining.length > 0) {
       switchToInstance(remaining[remaining.length - 1]);
     } else {
@@ -1073,6 +1111,17 @@ function handleCloseInstance(instanceKey: string): void {
         instanceKey: null,
         isStreaming: false,
       });
+    }
+  }
+
+  if (provider) {
+    const stillOpen = Array.from(agentSessions.values()).some((s) => s.agentType === provider.agentType);
+    if (!stillOpen) {
+      try {
+        provider.client.dispose();
+      } catch {}
+      provider.core?.disconnect();
+      providerClients.delete(provider.agentType);
     }
   }
 
@@ -1088,55 +1137,10 @@ async function handleUserMessage(
     range?: { startLine: number; endLine: number };
   }>,
 ): Promise<void> {
-  // Route to Mastra workflow for virtual orchestrator instances
-  const vi = currentInstanceKey ? virtualInstances.get(currentInstanceKey) : undefined;
-  if (vi) {
-    send({ type: "userMessage", text });
-
-    const sendChatMsg = (msg: string) =>
-      send({ method: "chatMessage", params: { from: "agent", text: msg, instanceId: vi.key } });
-
-    // If waiting for approval, this message is the user's response.
-    if (vi.pendingApproval) {
-      const pending = vi.pendingApproval;
-      vi.pendingApproval = undefined;
-
-      if (text.trim().toLowerCase() === "cancel") {
-        sendChatMsg("Orchestration cancelled.");
-        return;
-      }
-
-      sendChatMsg("Executing approved plan...");
-      vi.isStreaming = true;
-      try {
-        const result = await executeAndEvaluate(
-          pending.config,
-          pending.assignments,
-          pending.context,
-          pending.cost,
-          pending.runId,
-          pending.runStart,
-        );
-        if (result.status !== "completed" && result.status !== "done") {
-          sendChatMsg(`Orchestration finished with status: ${result.status}`);
-        }
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        sendChatMsg(`Error during execution: ${msg}`);
-      } finally {
-        vi.isStreaming = false;
-      }
-      return;
-    }
-
-    vi.isStreaming = true;
-    await handleOrchestrate(text);
-    vi.isStreaming = false;
-    return;
-  }
-
-  const inst = getActiveInstance();
+  const inst = getActiveSession();
   if (!inst) return;
+  const provider = providerClients.get(inst.agentType);
+  if (!provider) return;
 
   const chipNames = contextChips?.map((c) => {
     const name = c.fileName;
@@ -1150,13 +1154,10 @@ async function handleUserMessage(
   });
 
   try {
-    // Ensure ACP is connected and has a session — this is required for messaging.
-    await ensureAcpSession(inst);
-
-    // Kick off eisen-core graph session in the background — failure is non-fatal.
-    ensureCoreSession(inst).catch((e) =>
-      console.error("[Host] Non-fatal: failed to set up core session:", e),
-    );
+    if (!provider.client.isConnected()) {
+      await provider.client.connect();
+    }
+    await ensureCoreSession(inst);
 
     inst.streamingText = "";
     inst.stderrBuffer = "";
@@ -1169,12 +1170,12 @@ async function handleUserMessage(
       isDirectory: c.isDirectory,
       range: c.range,
     }));
-    const response = await inst.client.sendMessage(text, chipData);
+    const response = await provider.client.sendMessage(text, chipData, inst.acpSessionId);
 
     inst.isStreaming = false;
     if (inst.streamingText.length === 0) {
       send({ type: "error", text: "Agent returned no response." });
-      send({ type: "streamEnd", instanceId: inst.key, stopReason: "error", html: "" });
+      send({ type: "streamEnd", stopReason: "error", html: "", instanceId: inst.key });
     } else {
       const renderedHtml = marked.parse(inst.streamingText) as string;
       send({
@@ -1182,6 +1183,7 @@ async function handleUserMessage(
         instanceId: inst.key,
         stopReason: response.stopReason,
         html: renderedHtml,
+        instanceId: inst.key,
       });
     }
     inst.streamingText = "";
@@ -1189,42 +1191,51 @@ async function handleUserMessage(
     inst.isStreaming = false;
     const errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
     send({ type: "error", text: `Error: ${errorMessage}` });
-    send({ type: "streamEnd", instanceId: inst.key, stopReason: "error", html: "" });
+    send({ type: "streamEnd", stopReason: "error", html: "", instanceId: inst.key });
     inst.streamingText = "";
     inst.stderrBuffer = "";
   }
 }
 
 async function handleModeChange(modeId: string): Promise<void> {
-  const inst = getActiveInstance();
+  const inst = getActiveSession();
   if (!inst) return;
+  const provider = providerClients.get(inst.agentType);
+  if (!provider) return;
   try {
-    await inst.client.setMode(modeId);
+    await provider.client.setMode(modeId, inst.acpSessionId);
     const key = `${SELECTED_MODE_KEY}.${inst.agentType}`;
     await globalState.update(key, modeId);
-    sendSessionMetadata();
+    sendSessionMetadata(inst.key);
   } catch (error) {
     console.error("[Host] Failed to set mode:", error);
   }
 }
 
 async function handleModelChange(modelId: string): Promise<void> {
-  const inst = getActiveInstance();
+  const inst = getActiveSession();
   if (!inst) return;
+  const provider = providerClients.get(inst.agentType);
+  if (!provider) return;
   try {
-    await inst.client.setModel(modelId);
+    await provider.client.setModel(modelId, inst.acpSessionId);
     const key = `${SELECTED_MODEL_KEY}.${inst.agentType}`;
     await globalState.update(key, modelId);
-    sendSessionMetadata();
+    sendSessionMetadata(inst.key);
   } catch (error) {
     console.error("[Host] Failed to set model:", error);
   }
 }
 
 async function handleConnect(): Promise<void> {
-  const inst = getActiveInstance();
+  const inst = getActiveSession();
   if (!inst) return;
+  const provider = providerClients.get(inst.agentType);
+  if (!provider) return;
   try {
+    if (!provider.client.isConnected()) {
+      await provider.client.connect();
+    }
     await ensureCoreSession(inst);
   } catch (error) {
     send({
@@ -1235,26 +1246,12 @@ async function handleConnect(): Promise<void> {
 }
 
 async function handleNewChat(): Promise<void> {
-  const inst = getActiveInstance();
+  const inst = getActiveSession();
   if (!inst) return;
-
-  inst.acpSessionId = null;
-  inst.hasAcpSession = false;
-  inst.hasRestoredModeModel = false;
-  inst.streamingText = "";
-
-  send({ type: "chatCleared" });
-  send({ type: "sessionMetadata", modes: null, models: null });
-
   try {
-    if (inst.client.isConnected()) {
-      const workingDir = getCwd();
-      const resp = await inst.client.newSession(workingDir);
-      inst.acpSessionId = resp.sessionId;
-      inst.hasAcpSession = true;
-      sendSessionMetadata();
-      await ensureCoreSession(inst);
-    }
+    const next = await createSession(inst.agentType, inst.sessionMode);
+    switchToInstance(next.key);
+    await ensureCoreSession(next);
   } catch (error) {
     console.error("[Host] Failed to create new session:", error);
   }
@@ -1264,10 +1261,12 @@ function handleClearChat(): void {
   send({ type: "chatCleared" });
 }
 
-function sendSessionMetadata(): void {
-  const inst = getActiveInstance();
+function sendSessionMetadata(sessionKey?: string): void {
+  const inst = sessionKey ? agentSessions.get(sessionKey) : getActiveSession();
   if (!inst) return;
-  const metadata = inst.client.getSessionMetadata(inst.acpSessionId ?? undefined);
+  const provider = providerClients.get(inst.agentType);
+  if (!provider) return;
+  const metadata = provider.client.getSessionMetadata(inst.acpSessionId);
   send({
     type: "sessionMetadata",
     modes: metadata?.modes ?? null,
@@ -1275,18 +1274,18 @@ function sendSessionMetadata(): void {
     commands: metadata?.commands ?? null,
   });
 
-  if (!inst.hasRestoredModeModel && inst.hasAcpSession) {
+  if (!inst.hasRestoredModeModel) {
     inst.hasRestoredModeModel = true;
-    restoreSavedModeAndModel().catch((error) =>
+    restoreSavedModeAndModel(inst).catch((error) =>
       console.warn("[Host] Failed to restore saved mode/model:", error),
     );
   }
 }
 
-async function restoreSavedModeAndModel(): Promise<void> {
-  const inst = getActiveInstance();
-  if (!inst) return;
-  const metadata = inst.client.getSessionMetadata();
+async function restoreSavedModeAndModel(inst: AgentSession): Promise<void> {
+  const provider = providerClients.get(inst.agentType);
+  if (!provider) return;
+  const metadata = provider.client.getSessionMetadata(inst.acpSessionId);
   const availableModes = Array.isArray(metadata?.modes?.availableModes) ? metadata!.modes!.availableModes : [];
   const availableModels = Array.isArray(metadata?.models?.availableModels) ? metadata!.models!.availableModels : [];
 
@@ -1299,12 +1298,12 @@ async function restoreSavedModeAndModel(): Promise<void> {
   let modelRestored = false;
 
   if (savedModeId && availableModes.some((m: any) => m?.id === savedModeId)) {
-    await inst.client.setMode(savedModeId);
+    await provider.client.setMode(savedModeId, inst.acpSessionId);
     modeRestored = true;
   }
 
   if (savedModelId && availableModels.some((m: any) => m?.modelId === savedModelId)) {
-    await inst.client.setModel(savedModelId);
+    await provider.client.setModel(savedModelId, inst.acpSessionId);
     modelRestored = true;
   }
 
@@ -1492,12 +1491,12 @@ async function handleMessage(message: Record<string, any>): Promise<void> {
       break;
     case "selectAgent":
       if (message.agentId) {
-        handleSpawnAgent(message.agentId);
+        await handleSpawnAgent(message.agentId);
       }
       break;
     case "spawnAgent":
       if (message.agentType) {
-        handleSpawnAgent(message.agentType, message.sessionMode as SessionMode | undefined);
+        await handleSpawnAgent(message.agentType, message.sessionMode as SessionMode | undefined);
       }
       break;
     case "switchInstance":
@@ -1526,9 +1525,14 @@ async function handleMessage(message: Record<string, any>): Promise<void> {
     case "newChat":
       await handleNewChat();
       break;
-    case "cancel":
-      await getActiveClient()?.cancel();
+    case "cancel": {
+      const active = getActiveSession();
+      const provider = active ? providerClients.get(active.agentType) : null;
+      if (active && provider) {
+        await provider.client.cancel(active.acpSessionId);
+      }
       break;
+    }
     case "clearChat":
       handleClearChat();
       break;
@@ -1557,9 +1561,10 @@ async function handleMessage(message: Record<string, any>): Promise<void> {
       break;
   case "ready": {
       // Send current connection state
-      const activeClient = getActiveClient();
-      if (activeClient) {
-        send({ type: "connectionState", state: activeClient.getState() });
+      const activeSession = getActiveSession();
+      const activeProvider = activeSession ? providerClients.get(activeSession.agentType) : null;
+      if (activeProvider) {
+        send({ type: "connectionState", state: activeProvider.client.getState() });
       }
       // Send agent list for spawn dropdown
       const agentsWithStatus = getAgentsWithStatus();
@@ -1570,15 +1575,15 @@ async function handleMessage(message: Record<string, any>): Promise<void> {
           name: a.name,
           available: a.available,
         })),
-        selected: getActiveInstance()?.agentType ?? null,
+        selected: activeSession?.agentType ?? null,
       });
       sendInstanceList();
       // Send streaming state for active instance
-      const active = getActiveInstance();
-      if (active) {
-        send({ type: "streamingState", isStreaming: active.isStreaming });
+      if (activeSession) {
+        send({ type: "streamingState", isStreaming: activeSession.isStreaming });
+        sendSessionMetadata(activeSession.key);
+        await ensureCoreSession(activeSession);
       }
-      sendSessionMetadata();
       updateGraphSelection();
       break;
     }
@@ -1617,11 +1622,12 @@ async function main(): Promise<void> {
 
   rl.on("close", () => {
     console.error("[eisen-host] stdin closed, shutting down");
-    // Dispose all agents
-    for (const inst of agentInstances.values()) {
+    // Dispose all provider clients
+    for (const provider of providerClients.values()) {
       try {
-        inst.client.dispose();
+        provider.client.dispose();
       } catch {}
+      provider.core?.disconnect();
     }
     // Dispose terminals
     for (const terminal of terminals.values()) {

@@ -184,12 +184,11 @@ class Eisen {
         },
       });
 
-      this.chat = new Chat({
-        onSend: (text, instanceId, chips) => {
-          if (text) this.chat.addMessage({ from: "user", text, instanceId: instanceId ?? undefined });
-          ipc.send({
-            type: "sendMessage",
-            text,
+        this.chat = new Chat({
+          onSend: (text, instanceId, chips) => {
+            ipc.send({
+              type: "sendMessage",
+              text,
             instanceId,
             contextChips:
               chips.length > 0

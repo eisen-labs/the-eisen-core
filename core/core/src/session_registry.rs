@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::types::{SessionKey, SessionMode, SessionModel, SessionState, SessionSummary};
 
@@ -60,14 +60,21 @@ impl SessionStore {
         if !self.path.exists() {
             return Ok(StoredRegistry::default());
         }
+        let start = Instant::now();
         let raw = fs::read_to_string(&self.path)
             .with_context(|| format!("failed to read session store {}", self.path.display()))?;
         let parsed = serde_json::from_str(&raw)
             .with_context(|| format!("failed to parse session store {}", self.path.display()))?;
+        debug!(
+            path = %self.path.display(),
+            elapsed_ms = start.elapsed().as_millis(),
+            "loaded session registry"
+        );
         Ok(parsed)
     }
 
     fn save(&self, data: &StoredRegistry) -> Result<()> {
+        let start = Instant::now();
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent).with_context(|| {
                 format!("failed to create session store dir {}", parent.display())
@@ -89,6 +96,11 @@ impl SessionStore {
                 self.path.display()
             )
         })?;
+        debug!(
+            path = %self.path.display(),
+            elapsed_ms = start.elapsed().as_millis(),
+            "saved session registry"
+        );
         Ok(())
     }
 }
