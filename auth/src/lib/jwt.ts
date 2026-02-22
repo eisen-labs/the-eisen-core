@@ -1,8 +1,11 @@
 import { SignJWT, jwtVerify, decodeJwt } from "jose";
+import { nanoid } from "nanoid";
 import { env } from "../env.ts";
+import { isTokenRevoked } from "./tokenRevocation.ts";
 
 export interface SessionPayload {
-  sub: string; // user ID
+  jti: string;  // unique token ID used for revocation
+  sub: string;
   email: string;
   tier: "free" | "pro" | "premium";
   status: "active" | "expired" | "cancelled";
@@ -15,7 +18,8 @@ const ALGORITHM = "HS256";
 /**
  * Sign a new session JWT.
  */
-export async function signSession(payload: Omit<SessionPayload, "offlineDeadline">): Promise<{
+export async function signSession(payload: Omit<SessionPayload, "jti" | "offlineDeadline">): Promise<{
+  jti: string;
   sessionToken: string;
   expiresAt: number;
   offlineDeadline: number;
@@ -23,6 +27,7 @@ export async function signSession(payload: Omit<SessionPayload, "offlineDeadline
   const now = Math.floor(Date.now() / 1000);
   const expiresAt = now + env.JWT_EXPIRES_IN;
   const offlineDeadline = now + env.JWT_OFFLINE_WINDOW;
+  const jti = nanoid(21);
 
   const sessionToken = await new SignJWT({
     email: payload.email,
@@ -32,11 +37,13 @@ export async function signSession(payload: Omit<SessionPayload, "offlineDeadline
   } as Record<string, unknown>)
     .setProtectedHeader({ alg: ALGORITHM })
     .setSubject(payload.sub)
+    .setJti(jti)
     .setIssuedAt(now)
     .setExpirationTime(expiresAt)
     .sign(secret);
 
   return {
+    jti,
     sessionToken,
     expiresAt: expiresAt * 1000, // return as unix ms for client consistency
     offlineDeadline: offlineDeadline * 1000,
@@ -52,6 +59,7 @@ export async function verifySession(token: string): Promise<SessionPayload> {
   });
 
   return {
+    jti: payload.jti as string,
     sub: payload.sub as string,
     email: payload.email as string,
     tier: payload.tier as SessionPayload["tier"],
@@ -67,6 +75,7 @@ export async function verifySession(token: string): Promise<SessionPayload> {
  * verifies the signature, then issues a new token.
  */
 export async function refreshSession(token: string): Promise<{
+  jti: string;
   sessionToken: string;
   expiresAt: number;
   offlineDeadline: number;
@@ -94,6 +103,12 @@ export async function refreshSession(token: string): Promise<{
       clockTolerance: env.JWT_OFFLINE_WINDOW,
     });
   } catch {
+    return null;
+  }
+
+  // Refuse refresh if the token was explicitly revoked (e.g. user logged out)
+  const oldJti = claims.jti as string | undefined;
+  if (oldJti && (await isTokenRevoked(oldJti))) {
     return null;
   }
 

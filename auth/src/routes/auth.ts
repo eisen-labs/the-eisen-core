@@ -5,6 +5,7 @@ import { env } from "../env.ts";
 import { query } from "../db/client.ts";
 import { signSession, refreshSession } from "../lib/jwt.ts";
 import { requireAuth } from "../middleware/requireAuth.ts";
+import { revokeToken } from "../lib/tokenRevocation.ts";
 import { resolveApiKey } from "../lib/apiKey.ts";
 import { strictRateLimit, authRateLimit } from "../middleware/rateLimit.ts";
 import { nanoid } from "nanoid";
@@ -86,7 +87,12 @@ async function upsertUser(profile: OAuthProfile) {
 }
 
 /**
- * Issue JWT and redirect to the frontend with the token.
+ * Issue a short-lived one-time code and redirect to the frontend.
+ *
+ * The JWT is never placed in the URL — the frontend exchanges the code for
+ * the session token via POST /auth/exchange within 60 seconds.
+ * This prevents the token from appearing in browser history, server logs,
+ * or Referer headers.
  */
 async function issueSessionAndRedirect(
   c: Context,
@@ -99,11 +105,17 @@ async function issueSessionAndRedirect(
     status: user.status,
   });
 
-  // Redirect to frontend with token as query param
+  const code = nanoid(32);
+  const expiresAt = new Date(Date.now() + 60_000); // 60-second window
+
+  await query(
+    `INSERT INTO auth_codes (code, session_json, expires_at) VALUES ($1, $2, $3)`,
+    [code, JSON.stringify(session), expiresAt.toISOString()]
+  );
+
   const url = new URL(env.FRONTEND_URL);
   url.pathname = "/auth/callback";
-  url.searchParams.set("token", session.sessionToken);
-  url.searchParams.set("expiresAt", session.expiresAt.toString());
+  url.searchParams.set("code", code);
 
   return c.redirect(url.toString());
 }
@@ -363,6 +375,48 @@ auth.get("/auth/me", requireAuth, async (c) => {
 });
 
 /**
+ * POST /auth/exchange — exchange a one-time auth code for a session token.
+ *
+ * The frontend calls this immediately after the OAuth redirect with the ?code=
+ * query param. The code expires after 60 seconds and can only be used once.
+ */
+auth.post("/auth/exchange", authRateLimit, async (c) => {
+  const body = await c.req.json<{ code?: string }>();
+
+  if (!body.code) {
+    return c.json({ error: "code is required" }, 400);
+  }
+
+  const result = await query(
+    `UPDATE auth_codes
+     SET used_at = now()
+     WHERE code = $1
+       AND used_at IS NULL
+       AND expires_at > now()
+     RETURNING session_json`,
+    [body.code]
+  );
+
+  if (!result.rows.length) {
+    return c.json({ error: "Invalid or expired code" }, 401);
+  }
+
+  const row = result.rows[0] as { session_json: string };
+  const session = JSON.parse(row.session_json) as {
+    jti: string;
+    sessionToken: string;
+    expiresAt: number;
+    offlineDeadline: number;
+  };
+
+  return c.json({
+    sessionToken: session.sessionToken,
+    expiresAt: session.expiresAt,
+    offlineDeadline: session.offlineDeadline,
+  });
+});
+
+/**
  * POST /auth/refresh — refresh an expired JWT within the 7-day offline window
  */
 auth.post("/auth/refresh", authRateLimit, async (c) => {
@@ -378,15 +432,20 @@ auth.post("/auth/refresh", authRateLimit, async (c) => {
     return c.json({ error: "Offline deadline exceeded, re-authentication required" }, 401);
   }
 
-  return c.json(result);
+  return c.json({
+    sessionToken: result.sessionToken,
+    expiresAt: result.expiresAt,
+    offlineDeadline: result.offlineDeadline,
+  });
 });
 
 /**
- * POST /auth/logout — stateless logout (client discards token)
+ * POST /auth/logout — revokes the current JWT so it cannot be reused.
  */
 auth.post("/auth/logout", requireAuth, async (c) => {
-  // Stateless: no server-side session to invalidate.
-  // If a token blocklist is added later, record the token JTI here.
+  const user = c.get("user");
+  const tokenExpiresAt = new Date(user.offlineDeadline * 1000);
+  await revokeToken(user.jti, tokenExpiresAt);
   return c.json({ ok: true });
 });
 

@@ -62,8 +62,14 @@ const cleanupScheduled = new Set<string>();
  * Cloud Run sets X-Forwarded-For; falls back to connecting IP.
  */
 function getClientIp(c: Context): string {
+  const xff = c.req.header("X-Forwarded-For");
+  if (xff) {
+    // Cloud Run appends the real client IP at the end of X-Forwarded-For.
+    // Taking the last entry prevents spoofing via a client-supplied header.
+    const last = xff.split(",").at(-1)?.trim();
+    if (last) return last;
+  }
   return (
-    c.req.header("X-Forwarded-For")?.split(",")[0]?.trim() ||
     c.req.header("CF-Connecting-IP") ||
     c.req.header("X-Real-IP") ||
     "unknown"
