@@ -21,6 +21,7 @@ describe("DefaultProcessor", () => {
         type: "snapshot",
         agent_id: "opencode-a1b2c3",
         session_id: "sess_1",
+        session_mode: "single_agent",
         seq: 5,
         nodes: {
           "/src/api.ts": {
@@ -62,6 +63,7 @@ describe("DefaultProcessor", () => {
         type: "snapshot",
         agent_id: "test",
         session_id: "s",
+        session_mode: "single_agent",
         seq: 1,
         nodes: {
           "/f.ts": {
@@ -84,6 +86,7 @@ describe("DefaultProcessor", () => {
         type: "snapshot",
         agent_id: "test",
         session_id: "s",
+        session_mode: "single_agent",
         seq: 1,
         nodes: {},
       };
@@ -99,6 +102,7 @@ describe("DefaultProcessor", () => {
         type: "delta",
         agent_id: "opencode-a1b2c3",
         session_id: "sess_1",
+        session_mode: "single_agent",
         seq: 10,
         updates: [
           {
@@ -128,6 +132,7 @@ describe("DefaultProcessor", () => {
         type: "delta",
         agent_id: "test",
         session_id: "s",
+        session_mode: "single_agent",
         seq: 1,
         updates: [
           {
@@ -153,6 +158,7 @@ describe("DefaultProcessor", () => {
         type: "usage",
         agent_id: "opencode-a1b2c3",
         session_id: "sess_1",
+        session_mode: "single_agent",
         used: 45000,
         size: 200000,
       };
@@ -169,6 +175,7 @@ describe("DefaultProcessor", () => {
         type: "usage",
         agent_id: "test",
         session_id: "s",
+        session_mode: "single_agent",
         used: 1000,
         size: 5000,
         cost: { amount: 0.05, currency: "USD" },

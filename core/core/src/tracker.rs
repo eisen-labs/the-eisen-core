@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::types::{Action, Delta, FileNode, Snapshot, TrackerConfig, UsageMessage};
+use crate::types::{Action, Delta, FileNode, SessionMode, Snapshot, TrackerConfig, UsageMessage};
 
 /// Current wall-clock time in milliseconds since Unix epoch.
 fn now_ms() -> u64 {
@@ -11,18 +11,11 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-/// ContextTracker is the stateful core of Eisen.
-///
-/// It maintains a map of file nodes, tracks which files are inferred to be
-/// "in context" vs merely "visited", applies heat decay on each tick, and
-/// generates deltas that describe what changed.
-///
-/// Concurrency: wrapped in `Arc<Mutex<ContextTracker>>` by the caller.
-/// All mutation goes through the public methods below. The caller is
-/// responsible for locking; this struct is not internally synchronized.
-pub struct ContextTracker {
-    agent_id: String,
+/// SessionTracker holds tracking state for a single session.
+#[derive(Debug)]
+struct SessionTracker {
     session_id: String,
+    session_mode: SessionMode,
     files: HashMap<String, FileNode>,
     seq: u64,
     current_turn: u32,
@@ -36,14 +29,13 @@ pub struct ContextTracker {
     /// take_pending_usage(). This lets the tick loop broadcast them
     /// without the caller needing to handle the return value.
     pending_usage: Vec<UsageMessage>,
-    pending_terminal_output_ids: HashSet<u64>,
 }
 
-impl ContextTracker {
-    pub fn new(config: TrackerConfig) -> Self {
+impl SessionTracker {
+    fn new(session_id: String, session_mode: SessionMode, config: TrackerConfig) -> Self {
         Self {
-            agent_id: String::new(),
-            session_id: String::new(),
+            session_id,
+            session_mode,
             files: HashMap::new(),
             seq: 0,
             current_turn: 0,
@@ -52,49 +44,18 @@ impl ContextTracker {
             config,
             changed_paths: HashSet::new(),
             pending_usage: Vec::new(),
-            pending_terminal_output_ids: HashSet::new(),
         }
     }
 
-    /// Set the agent instance ID. Called from the `--agent-id` CLI flag.
-    /// Each connected agent gets a unique instance ID (e.g. "opencode-a1b2c3").
-    pub fn set_agent_id(&mut self, id: String) {
-        self.agent_id = id;
+    fn set_mode(&mut self, mode: SessionMode) {
+        self.session_mode = mode;
     }
 
-    /// Return the current agent instance ID (empty string if not yet set).
-    pub fn agent_id(&self) -> &str {
-        &self.agent_id
+    fn mode(&self) -> SessionMode {
+        self.session_mode
     }
 
-    /// Set the session ID. Called when sessionId is detected from the ACP
-    /// stream or provided via CLI flag.
-    pub fn set_session_id(&mut self, id: String) {
-        self.session_id = id;
-    }
-
-    /// Return the current session ID (empty string if not yet set).
-    pub fn session_id(&self) -> &str {
-        &self.session_id
-    }
-
-    // -------------------------------------------------------------------
-    // Public API — called by the proxy/extract layer
-    // -------------------------------------------------------------------
-
-    pub fn add_pending_terminal_output(&mut self, id: u64) {
-        self.pending_terminal_output_ids.insert(id);
-    }
-
-    pub fn take_pending_terminal_output(&mut self, id: u64) -> bool {
-        self.pending_terminal_output_ids.remove(&id)
-    }
-
-    /// Record a file access from any extraction channel.
-    ///
-    /// Sets heat to 1.0, marks the file as in-context, and updates the
-    /// turn-accessed counter. If the file is new it is created.
-    pub fn file_access(&mut self, path: &str, action: Action) {
+    fn file_access(&mut self, path: &str, action: Action) {
         let ts = now_ms();
         let node = self
             .files
@@ -117,18 +78,7 @@ impl ContextTracker {
         self.changed_paths.insert(path.to_string());
     }
 
-    /// Record a token usage update from the agent.
-    ///
-    /// If the usage drops by more than `compaction_threshold` relative to
-    /// the previous report, we infer that the LLM runtime compacted the
-    /// context. All files are evicted from context — only files re-accessed
-    /// in subsequent turns will re-enter.
-    ///
-    /// The resulting `UsageMessage` is queued internally and drained by
-    /// `take_pending_usage()` — typically called by the tick loop right
-    /// after `tick()`. Callers can treat `usage_update()` as
-    /// fire-and-forget; the broadcast happens automatically.
-    pub fn usage_update(&mut self, used: u32, size: u32) {
+    fn usage_update(&mut self, agent_id: &str, used: u32, size: u32) {
         let previous = self.last_used_tokens;
         self.last_used_tokens = used;
         self.context_size = size;
@@ -142,27 +92,20 @@ impl ContextTracker {
         }
 
         self.pending_usage.push(UsageMessage::new(
-            &self.agent_id,
+            agent_id,
             &self.session_id,
+            self.session_mode,
             used,
             size,
             None,
         ));
     }
 
-    /// Drain any pending usage messages queued by `usage_update()`.
-    ///
-    /// Called by the tick loop alongside `tick()` to broadcast usage
-    /// messages to TCP clients. Returns an empty vec if nothing is pending.
-    pub fn take_pending_usage(&mut self) -> Vec<UsageMessage> {
+    fn take_pending_usage(&mut self) -> Vec<UsageMessage> {
         std::mem::take(&mut self.pending_usage)
     }
 
-    /// Signal the end of an agent turn (agent returned PromptResponse).
-    ///
-    /// Increments the turn counter and transitions files that haven't been
-    /// accessed recently out of context.
-    pub fn end_turn(&mut self) {
+    fn end_turn(&mut self) {
         self.current_turn += 1;
 
         // Files not accessed within the context window exit context
@@ -176,12 +119,7 @@ impl ContextTracker {
         }
     }
 
-    /// Called every 100ms by the tick loop.
-    ///
-    /// Applies heat decay to non-context files, collects all changes since
-    /// the last tick (from file_access calls + decay), and returns a Delta
-    /// if anything changed. Returns `None` on empty ticks.
-    pub fn tick(&mut self) -> Option<Delta> {
+    fn tick(&mut self, agent_id: &str) -> Option<Delta> {
         // Decay heat on files that are NOT in context
         for (path, node) in &mut self.files {
             if !node.in_context && node.heat > 0.01 {
@@ -225,19 +163,16 @@ impl ContextTracker {
         }
 
         Some(Delta::new(
-            &self.agent_id,
+            agent_id,
             &self.session_id,
+            self.session_mode,
             self.seq,
             updates,
             removed,
         ))
     }
 
-    /// Return a full snapshot of the current state.
-    ///
-    /// Used when a new TCP client connects or when a client sends
-    /// `request_snapshot`.
-    pub fn snapshot(&self) -> Snapshot {
+    fn snapshot(&self, agent_id: &str) -> Snapshot {
         // Only include files that are warm or in-context
         let nodes: HashMap<String, FileNode> = self
             .files
@@ -246,24 +181,15 @@ impl ContextTracker {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
-        Snapshot::new(&self.agent_id, &self.session_id, self.seq, nodes)
+        Snapshot::new(
+            agent_id,
+            &self.session_id,
+            self.session_mode,
+            self.seq,
+            nodes,
+        )
     }
 
-    /// Current sequence number (useful for tests / diagnostics).
-    pub fn seq(&self) -> u64 {
-        self.seq
-    }
-
-    /// Current turn number.
-    pub fn current_turn(&self) -> u32 {
-        self.current_turn
-    }
-
-    // -------------------------------------------------------------------
-    // Internal helpers
-    // -------------------------------------------------------------------
-
-    /// On compaction, all files exit context.
     fn handle_compaction(&mut self) {
         for (path, node) in &mut self.files {
             if node.in_context {
@@ -271,6 +197,245 @@ impl ContextTracker {
                 self.changed_paths.insert(path.clone());
             }
         }
+    }
+}
+
+/// ContextTracker manages tracking state for multiple sessions.
+///
+/// Concurrency: wrapped in `Arc<Mutex<ContextTracker>>` by the caller.
+/// All mutation goes through the public methods below. The caller is
+/// responsible for locking; this struct is not internally synchronized.
+pub struct ContextTracker {
+    agent_id: String,
+    default_session_id: Option<String>,
+    sessions: HashMap<String, SessionTracker>,
+    config: TrackerConfig,
+    pending_prompt_requests: HashMap<u64, String>,
+    pending_terminal_output_ids: HashMap<u64, String>,
+}
+
+impl ContextTracker {
+    pub fn new(config: TrackerConfig) -> Self {
+        Self {
+            agent_id: String::new(),
+            default_session_id: None,
+            sessions: HashMap::new(),
+            config,
+            pending_prompt_requests: HashMap::new(),
+            pending_terminal_output_ids: HashMap::new(),
+        }
+    }
+
+    /// Set the agent instance ID. Called from the `--agent-id` CLI flag.
+    /// Each connected agent gets a unique instance ID (e.g. "opencode-a1b2c3").
+    pub fn set_agent_id(&mut self, id: String) {
+        self.agent_id = id;
+    }
+
+    /// Return the current agent instance ID (empty string if not yet set).
+    pub fn agent_id(&self) -> &str {
+        &self.agent_id
+    }
+
+    /// Set the default session ID. Called when sessionId is detected from the ACP
+    /// stream or provided via CLI flag.
+    pub fn set_session_id(&mut self, id: String) {
+        self.default_session_id = Some(id.clone());
+        self.ensure_session(&id);
+    }
+
+    /// Return the default session ID (empty string if not yet set).
+    pub fn session_id(&self) -> &str {
+        self.default_session_id.as_deref().unwrap_or("")
+    }
+
+    /// Set the session mode for a specific session.
+    pub fn set_session_mode(&mut self, session_id: &str, mode: SessionMode) {
+        self.ensure_session(session_id).set_mode(mode);
+    }
+
+    pub fn session_mode(&self, session_id: &str) -> Option<SessionMode> {
+        self.sessions.get(session_id).map(|s| s.mode())
+    }
+
+    pub fn session_ids(&self) -> Vec<String> {
+        self.sessions.keys().cloned().collect()
+    }
+
+    fn ensure_session(&mut self, session_id: &str) -> &mut SessionTracker {
+        self.sessions
+            .entry(session_id.to_string())
+            .or_insert_with(|| {
+                SessionTracker::new(
+                    session_id.to_string(),
+                    SessionMode::SingleAgent,
+                    self.config.clone(),
+                )
+            })
+    }
+
+    // -------------------------------------------------------------------
+    // Public API — called by the proxy/extract layer
+    // -------------------------------------------------------------------
+
+    pub fn add_pending_terminal_output(&mut self, id: u64, session_id: &str) {
+        self.pending_terminal_output_ids
+            .insert(id, session_id.to_string());
+    }
+
+    pub fn take_pending_terminal_output(&mut self, id: u64) -> Option<String> {
+        self.pending_terminal_output_ids.remove(&id)
+    }
+
+    pub fn record_prompt_request(&mut self, id: u64, session_id: &str) {
+        self.pending_prompt_requests
+            .insert(id, session_id.to_string());
+    }
+
+    pub fn end_turn_for_prompt_response(&mut self, id: u64) -> bool {
+        if let Some(session_id) = self.pending_prompt_requests.remove(&id) {
+            self.end_turn_for_session(&session_id);
+            return true;
+        }
+        false
+    }
+
+    /// Record a file access from any extraction channel.
+    ///
+    /// Sets heat to 1.0, marks the file as in-context, and updates the
+    /// turn-accessed counter. If the file is new it is created.
+    pub fn file_access(&mut self, path: &str, action: Action) {
+        let session_id = self.session_id().to_string();
+        self.file_access_for_session(&session_id, path, action);
+    }
+
+    pub fn file_access_for_session(&mut self, session_id: &str, path: &str, action: Action) {
+        self.ensure_session(session_id).file_access(path, action);
+    }
+
+    /// Record a token usage update from the agent.
+    ///
+    /// If the usage drops by more than `compaction_threshold` relative to
+    /// the previous report, we infer that the LLM runtime compacted the
+    /// context. All files are evicted from context — only files re-accessed
+    /// in subsequent turns will re-enter.
+    ///
+    /// The resulting `UsageMessage` is queued internally and drained by
+    /// `take_pending_usage()` — typically called by the tick loop right
+    /// after `tick()`. Callers can treat `usage_update()` as
+    /// fire-and-forget; the broadcast happens automatically.
+    pub fn usage_update(&mut self, used: u32, size: u32) {
+        let session_id = self.session_id().to_string();
+        self.usage_update_for_session(&session_id, used, size);
+    }
+
+    pub fn usage_update_for_session(&mut self, session_id: &str, used: u32, size: u32) {
+        let agent_id = self.agent_id.clone();
+        self.ensure_session(session_id)
+            .usage_update(&agent_id, used, size);
+    }
+
+    /// Drain any pending usage messages queued by `usage_update()`.
+    ///
+    /// Called by the tick loop alongside `tick()` to broadcast usage
+    /// messages to TCP clients. Returns an empty vec if nothing is pending.
+    pub fn take_pending_usage(&mut self) -> Vec<UsageMessage> {
+        self.take_pending_usage_all()
+    }
+
+    pub fn take_pending_usage_all(&mut self) -> Vec<UsageMessage> {
+        let session_ids: Vec<String> = self.sessions.keys().cloned().collect();
+        let mut pending = Vec::new();
+        for session_id in session_ids {
+            if let Some(session) = self.sessions.get_mut(&session_id) {
+                pending.extend(session.take_pending_usage());
+            }
+        }
+        pending
+    }
+
+    /// Signal the end of an agent turn (agent returned PromptResponse).
+    ///
+    /// Increments the turn counter and transitions files that haven't been
+    /// accessed recently out of context.
+    pub fn end_turn(&mut self) {
+        let session_id = self.session_id().to_string();
+        self.end_turn_for_session(&session_id);
+    }
+
+    pub fn end_turn_for_session(&mut self, session_id: &str) {
+        self.ensure_session(session_id).end_turn();
+    }
+
+    /// Called every 100ms by the tick loop.
+    ///
+    /// Applies heat decay to non-context files, collects all changes since
+    /// the last tick (from file_access calls + decay), and returns a Delta
+    /// if anything changed. Returns `None` on empty ticks.
+    pub fn tick(&mut self) -> Option<Delta> {
+        let session_id = self.session_id().to_string();
+        self.tick_for_session(&session_id)
+    }
+
+    pub fn tick_for_session(&mut self, session_id: &str) -> Option<Delta> {
+        let agent_id = self.agent_id.clone();
+        self.sessions
+            .get_mut(session_id)
+            .and_then(|session| session.tick(&agent_id))
+    }
+
+    pub fn tick_all(&mut self) -> Vec<Delta> {
+        let agent_id = self.agent_id.clone();
+        let session_ids: Vec<String> = self.sessions.keys().cloned().collect();
+        let mut deltas = Vec::new();
+        for session_id in session_ids {
+            if let Some(delta) = self
+                .sessions
+                .get_mut(&session_id)
+                .and_then(|session| session.tick(&agent_id))
+            {
+                deltas.push(delta);
+            }
+        }
+        deltas
+    }
+
+    /// Return a full snapshot of the current state.
+    ///
+    /// Used when a new TCP client connects or when a client sends
+    /// `request_snapshot`.
+    pub fn snapshot(&self) -> Snapshot {
+        let session_id = self.session_id();
+        self.snapshot_for_session(session_id)
+    }
+
+    pub fn snapshot_for_session(&self, session_id: &str) -> Snapshot {
+        if let Some(session) = self.sessions.get(session_id) {
+            return session.snapshot(&self.agent_id);
+        }
+
+        Snapshot::new(
+            &self.agent_id,
+            session_id,
+            SessionMode::SingleAgent,
+            0,
+            HashMap::new(),
+        )
+    }
+
+    /// Current sequence number (useful for tests / diagnostics).
+    pub fn seq(&self) -> u64 {
+        let session_id = self.session_id();
+        self.sessions.get(session_id).map(|s| s.seq).unwrap_or(0)
+    }
+
+    /// Current turn number.
+    pub fn current_turn(&self) -> u32 {
+        let session_id = self.session_id();
+        self.sessions
+            .get(session_id)
+            .map(|s| s.current_turn)
+            .unwrap_or(0)
     }
 }
 
@@ -296,6 +461,16 @@ mod tests {
             compaction_threshold,
             decay_rate,
         }
+    }
+
+    fn default_session<'a>(t: &'a ContextTracker) -> &'a SessionTracker {
+        let session_id = t.session_id();
+        t.sessions.get(session_id).expect("default session missing")
+    }
+
+    fn default_session_mut<'a>(t: &'a mut ContextTracker) -> &'a mut SessionTracker {
+        let session_id = t.session_id().to_string();
+        t.ensure_session(&session_id)
     }
 
     // ---------------------------------------------------------------
@@ -362,14 +537,17 @@ mod tests {
         t.file_access("/src/main.rs", Action::Read);
 
         // Simulate some decay
-        let node = t.files.get_mut("/src/main.rs").unwrap();
+        let node = default_session_mut(&mut t)
+            .files
+            .get_mut("/src/main.rs")
+            .unwrap();
         node.heat = 0.5;
         node.in_context = false;
 
         // Re-access with a different action
         t.file_access("/src/main.rs", Action::Write);
 
-        let node = &t.files["/src/main.rs"];
+        let node = &default_session(&t).files["/src/main.rs"];
         assert_eq!(node.heat, 1.0);
         assert!(node.in_context);
         assert_eq!(node.last_action, Action::Write);
@@ -383,7 +561,7 @@ mod tests {
         t.end_turn(); // turn 1 -> 2
         t.file_access("/a.rs", Action::Write);
 
-        assert_eq!(t.files["/a.rs"].turn_accessed, 2);
+        assert_eq!(default_session(&t).files["/a.rs"].turn_accessed, 2);
     }
 
     // ---------------------------------------------------------------
@@ -408,11 +586,11 @@ mod tests {
         // Still in context after 2 turns
         t.end_turn(); // turn 1
         t.end_turn(); // turn 2
-        assert!(t.files["/a.rs"].in_context);
+        assert!(default_session(&t).files["/a.rs"].in_context);
 
         // Exits context after 3rd end_turn (current_turn=3, accessed=0, gap=3 > 2)
         t.end_turn(); // turn 3
-        assert!(!t.files["/a.rs"].in_context);
+        assert!(!default_session(&t).files["/a.rs"].in_context);
     }
 
     #[test]
@@ -425,11 +603,11 @@ mod tests {
 
         t.end_turn(); // turn 2
                       // gap = 2 - 1 = 1, which is NOT > 1, so still in context
-        assert!(t.files["/a.rs"].in_context);
+        assert!(default_session(&t).files["/a.rs"].in_context);
 
         t.end_turn(); // turn 3
                       // gap = 3 - 1 = 2 > 1 — now exits
-        assert!(!t.files["/a.rs"].in_context);
+        assert!(!default_session(&t).files["/a.rs"].in_context);
     }
 
     // ---------------------------------------------------------------
@@ -446,7 +624,7 @@ mod tests {
         let delta = t.tick();
         assert!(delta.is_some()); // dirty from file_access
 
-        let node = &t.files["/a.rs"];
+        let node = &default_session(&t).files["/a.rs"];
         assert_eq!(node.heat, 1.0);
 
         // Subsequent tick — nothing changed
@@ -460,7 +638,7 @@ mod tests {
         t.file_access("/a.rs", Action::Read); // turn 0, in_context=true
 
         t.end_turn(); // turn 1, gap=1 > 0, file exits context
-        assert!(!t.files["/a.rs"].in_context);
+        assert!(!default_session(&t).files["/a.rs"].in_context);
 
         // First tick: drains dirty from file_access+end_turn AND applies
         // decay (file is !in_context, heat=1.0 > 1.0*0.90 = 0.90)
@@ -487,7 +665,7 @@ mod tests {
         assert!(delta.is_some());
         let d = delta.unwrap();
         assert!(d.removed.contains(&"/a.rs".to_string()));
-        assert!(!t.files.contains_key("/a.rs"));
+        assert!(!default_session(&t).files.contains_key("/a.rs"));
     }
 
     #[test]
@@ -544,14 +722,14 @@ mod tests {
         // Simulate usage: 180k used
         t.usage_update(180_000, 200_000);
 
-        assert!(t.files["/a.rs"].in_context);
-        assert!(t.files["/b.rs"].in_context);
+        assert!(default_session(&t).files["/a.rs"].in_context);
+        assert!(default_session(&t).files["/b.rs"].in_context);
 
         // Usage drops to 45k — that's a 75% drop, above the 50% threshold
         t.usage_update(45_000, 200_000);
 
-        assert!(!t.files["/a.rs"].in_context);
-        assert!(!t.files["/b.rs"].in_context);
+        assert!(!default_session(&t).files["/a.rs"].in_context);
+        assert!(!default_session(&t).files["/b.rs"].in_context);
     }
 
     #[test]
@@ -563,7 +741,7 @@ mod tests {
         // Small drop: 100k -> 80k = 20% drop, below 50%
         t.usage_update(80_000, 200_000);
 
-        assert!(t.files["/a.rs"].in_context);
+        assert!(default_session(&t).files["/a.rs"].in_context);
     }
 
     #[test]
@@ -574,7 +752,7 @@ mod tests {
         // First usage report — previous was 0, so no compaction logic
         t.usage_update(45_000, 200_000);
 
-        assert!(t.files["/a.rs"].in_context);
+        assert!(default_session(&t).files["/a.rs"].in_context);
     }
 
     // ---------------------------------------------------------------
@@ -631,7 +809,11 @@ mod tests {
         let mut t = default_tracker();
         t.file_access("/a.rs", Action::Read);
         // Artificially set heat to 0 while keeping in_context
-        t.files.get_mut("/a.rs").unwrap().heat = 0.0;
+        default_session_mut(&mut t)
+            .files
+            .get_mut("/a.rs")
+            .unwrap()
+            .heat = 0.0;
 
         let snap = t.snapshot();
         // in_context=true, so it should still be included
@@ -662,21 +844,30 @@ mod tests {
     fn all_action_variants_stored() {
         let mut t = default_tracker();
         t.file_access("/a.rs", Action::UserProvided);
-        assert_eq!(t.files["/a.rs"].last_action, Action::UserProvided);
+        assert_eq!(
+            default_session(&t).files["/a.rs"].last_action,
+            Action::UserProvided
+        );
 
         t.file_access("/b.rs", Action::UserReferenced);
-        assert_eq!(t.files["/b.rs"].last_action, Action::UserReferenced);
+        assert_eq!(
+            default_session(&t).files["/b.rs"].last_action,
+            Action::UserReferenced
+        );
 
         t.file_access("/c.rs", Action::Search);
-        assert_eq!(t.files["/c.rs"].last_action, Action::Search);
+        assert_eq!(
+            default_session(&t).files["/c.rs"].last_action,
+            Action::Search
+        );
     }
 
     #[test]
     fn search_access_marks_in_context() {
         let mut t = default_tracker();
         t.file_access("/src", Action::Search);
-        assert!(t.files["/src"].in_context);
-        assert_eq!(t.files["/src"].heat, 1.0);
+        assert!(default_session(&t).files["/src"].in_context);
+        assert_eq!(default_session(&t).files["/src"].heat, 1.0);
     }
 
     // ---------------------------------------------------------------
@@ -811,20 +1002,20 @@ mod tests {
 
         // First compaction
         t.usage_update(45_000, 200_000);
-        assert!(!t.files["/a.rs"].in_context);
-        assert!(!t.files["/b.rs"].in_context);
+        assert!(!default_session(&t).files["/a.rs"].in_context);
+        assert!(!default_session(&t).files["/b.rs"].in_context);
 
         // Re-access after compaction
         t.file_access("/a.rs", Action::Read);
-        assert!(t.files["/a.rs"].in_context);
-        assert!(!t.files["/b.rs"].in_context);
+        assert!(default_session(&t).files["/a.rs"].in_context);
+        assert!(!default_session(&t).files["/b.rs"].in_context);
 
         // Usage climbs back up
         t.usage_update(160_000, 200_000);
 
         // Second compaction
         t.usage_update(40_000, 200_000);
-        assert!(!t.files["/a.rs"].in_context);
+        assert!(!default_session(&t).files["/a.rs"].in_context);
     }
 
     #[test]
@@ -835,13 +1026,16 @@ mod tests {
         t.usage_update(180_000, 200_000);
         t.usage_update(45_000, 200_000); // compaction
 
-        assert!(!t.files["/a.rs"].in_context);
+        assert!(!default_session(&t).files["/a.rs"].in_context);
 
         // Immediately re-access
         t.file_access("/a.rs", Action::Write);
-        assert!(t.files["/a.rs"].in_context);
-        assert_eq!(t.files["/a.rs"].heat, 1.0);
-        assert_eq!(t.files["/a.rs"].last_action, Action::Write);
+        assert!(default_session(&t).files["/a.rs"].in_context);
+        assert_eq!(default_session(&t).files["/a.rs"].heat, 1.0);
+        assert_eq!(
+            default_session(&t).files["/a.rs"].last_action,
+            Action::Write
+        );
     }
 
     #[test]
@@ -851,7 +1045,7 @@ mod tests {
         t.usage_update(180_000, 200_000);
         t.usage_update(45_000, 200_000);
         // No files to evict — should be a no-op
-        assert!(t.files.is_empty());
+        assert!(default_session(&t).files.is_empty());
     }
 
     // ---------------------------------------------------------------
@@ -896,14 +1090,17 @@ mod tests {
         t.file_access("/a.rs", Action::Read);
         t.end_turn();
         t.tick(); // prunes /a.rs
-        assert!(!t.files.contains_key("/a.rs"));
+        assert!(!default_session(&t).files.contains_key("/a.rs"));
 
         // Re-access creates a fresh node
         t.file_access("/a.rs", Action::Write);
-        assert!(t.files.contains_key("/a.rs"));
-        assert_eq!(t.files["/a.rs"].heat, 1.0);
-        assert!(t.files["/a.rs"].in_context);
-        assert_eq!(t.files["/a.rs"].last_action, Action::Write);
+        assert!(default_session(&t).files.contains_key("/a.rs"));
+        assert_eq!(default_session(&t).files["/a.rs"].heat, 1.0);
+        assert!(default_session(&t).files["/a.rs"].in_context);
+        assert_eq!(
+            default_session(&t).files["/a.rs"].last_action,
+            Action::Write
+        );
     }
 
     // ---------------------------------------------------------------

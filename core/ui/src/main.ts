@@ -87,8 +87,8 @@ class Eisen {
               : undefined,
         });
       },
-      onAddAgent: (agentType) => {
-        this.transport.send({ type: "addAgent", agentType });
+      onAddAgent: (agentType, sessionMode) => {
+        this.transport.send({ type: "addAgent", agentType, sessionMode });
       },
       onModeChange: (modeId) => {
         this.transport.send({ type: "selectMode", modeId });

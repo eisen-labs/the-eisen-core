@@ -19,8 +19,10 @@ use tracing_subscriber::EnvFilter;
 use tracing::debug;
 
 use eisen_core::flatten::flatten;
+use eisen_core::orchestrator::OrchestratorAggregator;
 use eisen_core::parser::tree::SymbolTree;
 use eisen_core::proxy;
+use eisen_core::session_registry::SessionRegistry;
 use eisen_core::tcp::{self, WireLine};
 use eisen_core::tracker::ContextTracker;
 use eisen_core::types::{TrackerConfig, ZoneConfig};
@@ -197,11 +199,25 @@ async fn main() -> Result<()> {
             // Broadcast channel for deltas -> TCP clients
             let (delta_tx, _) = broadcast::channel::<WireLine>(256);
 
+            // Create session registry
+            let registry = Arc::new(Mutex::new(SessionRegistry::load_default()));
+            let orchestrator = Arc::new(Mutex::new(OrchestratorAggregator::new()));
+
             // Spawn TCP server
             let tcp_tracker = tracker.clone();
             let tcp_delta_tx = delta_tx.clone();
+            let tcp_registry = registry.clone();
+            let tcp_orchestrator = orchestrator.clone();
             tokio::spawn(async move {
-                if let Err(e) = tcp::serve(listener, tcp_tracker, tcp_delta_tx).await {
+                if let Err(e) = tcp::serve(
+                    listener,
+                    tcp_tracker,
+                    tcp_delta_tx,
+                    tcp_registry,
+                    tcp_orchestrator,
+                )
+                .await
+                {
                     eprintln!("eisen-core tcp server error: {e}");
                 }
             });
@@ -237,6 +253,8 @@ async fn main() -> Result<()> {
             // 100ms as soon as activity resumes.
             let tick_tracker = tracker.clone();
             let tick_tx = delta_tx.clone();
+            let tick_registry = registry.clone();
+            let tick_orchestrator = orchestrator.clone();
             let tick_loop = tokio::spawn(async move {
                 const ACTIVE_INTERVAL_MS: u64 = 100;
                 const IDLE_INTERVAL_MS: u64 = 500;
@@ -253,7 +271,7 @@ async fn main() -> Result<()> {
                     let mut had_activity = false;
 
                     // Broadcast any pending usage messages
-                    let usage_msgs = t.take_pending_usage();
+                    let usage_msgs = t.take_pending_usage_all();
                     if !usage_msgs.is_empty() {
                         had_activity = true;
                         debug!(
@@ -261,20 +279,51 @@ async fn main() -> Result<()> {
                             "broadcasting pending usage messages"
                         );
                     }
-                    for usage in usage_msgs {
+                    let orchestrator_usage = {
+                        let registry = tick_registry.lock().await;
+                        let mut aggregator = tick_orchestrator.lock().await;
+                        aggregator.aggregate_usage(&t, &registry, &usage_msgs)
+                    };
+                    for usage in &usage_msgs {
+                        tcp::broadcast_line(&tick_tx, usage);
+                    }
+                    for usage in orchestrator_usage {
                         tcp::broadcast_line(&tick_tx, &usage);
                     }
 
                     // Broadcast delta if anything changed
-                    if let Some(ref delta) = t.tick() {
+                    let deltas = t.tick_all();
+                    if !deltas.is_empty() {
                         had_activity = true;
+                    }
+                    for delta in deltas {
                         debug!(
                             seq = delta.seq,
                             updates = delta.updates.len(),
                             removed = delta.removed.len(),
+                            session_id = delta.session_id.as_str(),
                             "broadcasting delta from tick"
                         );
-                        tcp::broadcast_line(&tick_tx, delta);
+                        tcp::broadcast_line(&tick_tx, &delta);
+                    }
+
+                    let orchestrator_deltas = {
+                        let registry = tick_registry.lock().await;
+                        let mut aggregator = tick_orchestrator.lock().await;
+                        aggregator.tick(&t, &registry)
+                    };
+                    if !orchestrator_deltas.is_empty() {
+                        had_activity = true;
+                    }
+                    for delta in orchestrator_deltas {
+                        debug!(
+                            seq = delta.seq,
+                            updates = delta.updates.len(),
+                            removed = delta.removed.len(),
+                            session_id = delta.session_id.as_str(),
+                            "broadcasting orchestrator delta"
+                        );
+                        tcp::broadcast_line(&tick_tx, &delta);
                     }
 
                     // Adaptive interval: back off when idle, speed up on activity

@@ -70,6 +70,7 @@ interface WebviewMessage {
   query?: string;
   instanceKey?: string;
   agentType?: string;
+  sessionMode?: SessionMode;
   contextChips?: Array<{
     filePath: string;
     fileName: string;
@@ -78,10 +79,13 @@ interface WebviewMessage {
   }>;
 }
 
+type SessionMode = "single_agent" | "orchestrator";
+
 interface AgentInstance {
   key: string; // "op1", "cl2" — the tab identity
   agentType: string; // "opencode", "claude-code" — which agent config
   label: string; // "op1", "cl2" — displayed on the tab
+  sessionMode: SessionMode;
   client: ACPClient;
   acpSessionId: string | null;
   hasAcpSession: boolean;
@@ -140,7 +144,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return this.activeInstance?.client ?? null;
   }
 
-  private createInstance(agentType: string): AgentInstance {
+  private createInstance(agentType: string, sessionMode: SessionMode): AgentInstance {
     if (this.agentInstances.size >= MAX_AGENT_INSTANCES) {
       throw new Error(
         `Maximum number of concurrent agents (${MAX_AGENT_INSTANCES}) reached. ` +
@@ -171,6 +175,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       key,
       agentType,
       label,
+      sessionMode,
       client,
       acpSessionId: null,
       hasAcpSession: false,
@@ -311,8 +316,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     await inst.client.connect();
   }
 
-  public async spawnAndConnect(agentType?: string): Promise<void> {
-    this.spawnAgent(agentType);
+  public async spawnAndConnect(agentType?: string, sessionMode?: SessionMode): Promise<void> {
+    this.spawnAgent(agentType, sessionMode);
     const inst = this.activeInstance;
     if (inst) await this.ensureClientConnected(inst);
   }
@@ -393,7 +398,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         case "spawnAgent":
           if (message.agentType) {
-            this.handleSpawnAgent(message.agentType);
+            this.handleSpawnAgent(message.agentType, message.sessionMode);
           }
           break;
         case "switchInstance":
@@ -497,12 +502,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private handleSpawnAgent(agentType: string): void {
+  private handleSpawnAgent(agentType: string, sessionMode: SessionMode = "single_agent"): void {
     const agent = getAgent(agentType);
     if (!agent) return;
 
     try {
-      const instance = this.createInstance(agentType);
+      const instance = this.createInstance(agentType, sessionMode);
       this.switchToInstance(instance.key);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to spawn agent";
@@ -572,9 +577,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     await this.handleNewChat();
   }
 
-  public spawnAgent(agentType?: string): void {
+  public spawnAgent(agentType?: string, sessionMode?: SessionMode): void {
     const type = agentType ?? getDefaultAgent().id;
-    this.handleSpawnAgent(type);
+    this.handleSpawnAgent(type, sessionMode ?? "single_agent");
   }
 
   public clearChat(): void {

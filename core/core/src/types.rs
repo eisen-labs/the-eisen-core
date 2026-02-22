@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -59,6 +60,75 @@ pub struct NodeUpdate {
 }
 
 // ---------------------------------------------------------------------------
+// Session registry types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionMode {
+    SingleAgent,
+    Orchestrator,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionModel {
+    pub model_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct SessionKey {
+    pub agent_id: String,
+    pub session_id: String,
+}
+
+impl SessionKey {
+    pub fn new(agent_id: &str, session_id: &str) -> Self {
+        Self {
+            agent_id: agent_id.to_string(),
+            session_id: session_id.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionState {
+    pub agent_id: String,
+    pub session_id: String,
+    pub mode: SessionMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<SessionModel>,
+    #[serde(default)]
+    pub history: Vec<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub context: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub providers: Vec<SessionKey>,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+}
+
+impl SessionState {
+    pub fn key(&self) -> SessionKey {
+        SessionKey::new(&self.agent_id, &self.session_id)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSummary {
+    pub agent_id: String,
+    pub session_id: String,
+    pub mode: SessionMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<SessionModel>,
+    pub updated_at_ms: u64,
+    pub is_active: bool,
+}
+
+// ---------------------------------------------------------------------------
 // Wire messages: server -> client
 // ---------------------------------------------------------------------------
 
@@ -69,6 +139,7 @@ pub struct Snapshot {
     pub msg_type: String, // always "snapshot"
     pub agent_id: String,
     pub session_id: String,
+    pub session_mode: SessionMode,
     pub seq: u64,
     pub nodes: HashMap<String, FileNode>,
 }
@@ -80,6 +151,7 @@ pub struct Delta {
     pub msg_type: String, // always "delta"
     pub agent_id: String,
     pub session_id: String,
+    pub session_mode: SessionMode,
     pub seq: u64,
     pub updates: Vec<NodeUpdate>,
     pub removed: Vec<String>,
@@ -92,6 +164,7 @@ pub struct UsageMessage {
     pub msg_type: String, // always "usage"
     pub agent_id: String,
     pub session_id: String,
+    pub session_mode: SessionMode,
     pub used: u32,
     pub size: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -109,9 +182,61 @@ pub struct Cost {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct ClientMessage {
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ClientMessage {
+    RequestSnapshot {
+        #[serde(default)]
+        session_id: Option<String>,
+    },
+    SetStreamFilter {
+        #[serde(default)]
+        session_id: Option<String>,
+        #[serde(default)]
+        session_mode: Option<SessionMode>,
+    },
+    Rpc {
+        id: String,
+        method: String,
+        #[serde(default)]
+        params: Option<Value>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcError {
+    pub code: i32,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcResponse {
     #[serde(rename = "type")]
     pub msg_type: String,
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<RpcError>,
+}
+
+impl RpcResponse {
+    pub fn result(id: String, value: Value) -> Self {
+        Self {
+            msg_type: "rpc_result".to_string(),
+            id,
+            result: Some(value),
+            error: None,
+        }
+    }
+
+    pub fn error(id: String, code: i32, message: String) -> Self {
+        Self {
+            msg_type: "rpc_error".to_string(),
+            id,
+            result: None,
+            error: Some(RpcError { code, message }),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -321,6 +446,7 @@ impl Snapshot {
     pub fn new(
         agent_id: &str,
         session_id: &str,
+        session_mode: SessionMode,
         seq: u64,
         nodes: HashMap<String, FileNode>,
     ) -> Self {
@@ -328,6 +454,7 @@ impl Snapshot {
             msg_type: "snapshot".to_string(),
             agent_id: agent_id.to_string(),
             session_id: session_id.to_string(),
+            session_mode,
             seq,
             nodes,
         }
@@ -338,6 +465,7 @@ impl Delta {
     pub fn new(
         agent_id: &str,
         session_id: &str,
+        session_mode: SessionMode,
         seq: u64,
         updates: Vec<NodeUpdate>,
         removed: Vec<String>,
@@ -346,6 +474,7 @@ impl Delta {
             msg_type: "delta".to_string(),
             agent_id: agent_id.to_string(),
             session_id: session_id.to_string(),
+            session_mode,
             seq,
             updates,
             removed,
@@ -354,11 +483,19 @@ impl Delta {
 }
 
 impl UsageMessage {
-    pub fn new(agent_id: &str, session_id: &str, used: u32, size: u32, cost: Option<Cost>) -> Self {
+    pub fn new(
+        agent_id: &str,
+        session_id: &str,
+        session_mode: SessionMode,
+        used: u32,
+        size: u32,
+        cost: Option<Cost>,
+    ) -> Self {
         Self {
             msg_type: "usage".to_string(),
             agent_id: agent_id.to_string(),
             session_id: session_id.to_string(),
+            session_mode,
             used,
             size,
             cost,

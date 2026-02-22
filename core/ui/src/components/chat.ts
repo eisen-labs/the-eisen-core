@@ -1,11 +1,18 @@
 import { el } from "../dom";
 import { ICON } from "../panels/icons";
-import type { AvailableAgent, AvailableCommand, ContextChip, FileSearchResult, SessionMeta } from "../types";
+import type {
+  AvailableAgent,
+  AvailableCommand,
+  ContextChip,
+  FileSearchResult,
+  SessionMeta,
+  SessionMode,
+} from "../types";
 import { escapeHtml } from "../utils";
 
 export interface ChatCb {
   onSend(text: string, instanceId: string | null, chips: ContextChip[]): void;
-  onAddAgent(type: string): void;
+  onAddAgent(type: string, mode: SessionMode): void;
   onModeChange(id: string): void;
   onModelChange(id: string): void;
   onFileSearch(query: string): void;
@@ -40,6 +47,7 @@ export class Chat {
   private cmdIdx = -1;
   private agents: AvailableAgent[] = [];
   private open: string | null = null;
+  private agentMode: SessionMode = "single_agent";
 
   constructor(cb: ChatCb) {
     this.cb = cb;
@@ -165,17 +173,64 @@ export class Chat {
     this.close();
     this.open = "agents";
     const p = this.dropdowns.agents;
+    this.renderAgentPicker();
+    p.style.display = "flex";
+    this.positionDropdown("agents", this.inputRow, true);
+  }
+
+  private renderAgentPicker(): void {
+    const p = this.dropdowns.agents;
     p.innerHTML = "";
+
+    const header = el("div", { className: "agent-picker-header" });
+    header.append(el("div", { className: "agent-picker-label" }, "Mode"));
+
+    const toggle = el("div", { className: "agent-mode-toggle" });
+    const normal = el(
+      "button",
+      {
+        type: "button",
+        className: this.agentMode === "single_agent" ? "mode-chip active" : "mode-chip",
+      },
+      "Normal",
+    );
+    const orchestrator = el(
+      "button",
+      {
+        type: "button",
+        className: this.agentMode === "orchestrator" ? "mode-chip active" : "mode-chip",
+      },
+      "Orchestrator",
+    );
+    normal.addEventListener("click", () => {
+      if (this.agentMode !== "single_agent") {
+        this.agentMode = "single_agent";
+        this.renderAgentPicker();
+      }
+    });
+    orchestrator.addEventListener("click", () => {
+      if (this.agentMode !== "orchestrator") {
+        this.agentMode = "orchestrator";
+        this.renderAgentPicker();
+      }
+    });
+    toggle.append(normal, orchestrator);
+    header.append(toggle);
+    p.append(header);
+
+    if (!this.agents.length) {
+      p.append(el("div", { className: "option" }, "No providers available"));
+      return;
+    }
+
     for (const a of this.agents) {
       const btn = el("div", { className: OPT }, a.name);
       btn.addEventListener("click", () => {
         this.close();
-        this.cb.onAddAgent(a.id);
+        this.cb.onAddAgent(a.id, this.agentMode);
       });
       p.append(btn);
     }
-    p.style.display = "flex";
-    this.positionDropdown("agents", this.inputRow, true);
   }
 
   setMeta(meta: SessionMeta, id?: string): void {

@@ -119,7 +119,12 @@ pub async fn downstream_task(
                 let id = v.get("id");
                 let (agent_id, session_id) = {
                     let t = tracker.lock().await;
-                    (t.agent_id().to_string(), t.session_id().to_string())
+                    let sid = block_result
+                        .session_id
+                        .as_deref()
+                        .unwrap_or_else(|| t.session_id())
+                        .to_string();
+                    (t.agent_id().to_string(), sid)
                 };
 
                 warn!(
@@ -131,7 +136,7 @@ pub async fn downstream_task(
                 // Record in tracker as Blocked action
                 {
                     let mut t = tracker.lock().await;
-                    t.file_access(&block_result.path, Action::Blocked);
+                    t.file_access_for_session(&session_id, &block_result.path, Action::Blocked);
                 }
 
                 // Build JSON-RPC error response for the agent
@@ -182,6 +187,7 @@ pub async fn downstream_task(
 struct ZoneViolation {
     path: String,
     action: String, // "read" or "write"
+    session_id: Option<String>,
 }
 
 /// Check if a JSON-RPC message from the agent is a zone violation.
@@ -213,9 +219,15 @@ fn check_zone_violation(v: &serde_json::Value, zone: &ZoneConfig) -> Option<Zone
     if zone.is_allowed(&path) {
         None // Path is within the zone — allow
     } else {
+        let session_id = v
+            .get("params")
+            .and_then(|p| p.get("sessionId"))
+            .and_then(|p| p.as_str())
+            .map(|s| s.to_string());
         Some(ZoneViolation {
             path,
             action: action_str.to_string(),
+            session_id,
         })
     }
 }

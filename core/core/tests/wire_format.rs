@@ -7,9 +7,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use eisen_core::orchestrator::OrchestratorAggregator;
+use eisen_core::session_registry::SessionRegistry;
 use eisen_core::tcp::{self, WireLine};
 use eisen_core::tracker::ContextTracker;
 use eisen_core::types::{Action, TrackerConfig};
+use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, Mutex};
@@ -22,6 +25,9 @@ struct TestServer {
     port: u16,
     tracker: Arc<Mutex<ContextTracker>>,
     delta_tx: broadcast::Sender<WireLine>,
+    _registry: Arc<Mutex<SessionRegistry>>,
+    _orchestrator: Arc<Mutex<OrchestratorAggregator>>,
+    _registry_dir: TempDir,
 }
 
 impl TestServer {
@@ -31,6 +37,11 @@ impl TestServer {
 
     async fn start_with_config(config: TrackerConfig) -> Self {
         let tracker = Arc::new(Mutex::new(ContextTracker::new(config)));
+        let registry_dir = tempfile::tempdir().unwrap();
+        let registry = Arc::new(Mutex::new(SessionRegistry::load_from_path(
+            registry_dir.path().join("core_sessions.json"),
+        )));
+        let orchestrator = Arc::new(Mutex::new(OrchestratorAggregator::new()));
         let (delta_tx, _) = broadcast::channel::<WireLine>(64);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -38,14 +49,18 @@ impl TestServer {
 
         // TCP accept loop
         let t = tracker.clone();
+        let reg = registry.clone();
+        let orch = orchestrator.clone();
         let tx = delta_tx.clone();
         tokio::spawn(async move {
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
                 let t2 = t.clone();
+                let reg2 = reg.clone();
+                let orch2 = orch.clone();
                 let rx = tx.subscribe();
                 tokio::spawn(async move {
-                    let _ = tcp::handle_client(stream, t2, rx).await;
+                    let _ = tcp::handle_client(stream, t2, rx, reg2, orch2).await;
                 });
             }
         });
@@ -71,6 +86,9 @@ impl TestServer {
             port,
             tracker,
             delta_tx,
+            _registry: registry,
+            _orchestrator: orchestrator,
+            _registry_dir: registry_dir,
         }
     }
 
@@ -131,6 +149,14 @@ async fn snapshot_wire_format() {
     // Top-level fields per DELTA_PROTOCOL.md
     assert_eq!(msg["type"], "snapshot", "snapshot must have type=snapshot");
     assert!(msg["session_id"].is_string(), "session_id must be a string");
+    assert!(
+        msg["session_mode"].is_string(),
+        "session_mode must be a string"
+    );
+    assert!(
+        msg["session_mode"].is_string(),
+        "session_mode must be a string"
+    );
     assert!(msg["seq"].is_u64(), "seq must be u64");
     assert!(msg["nodes"].is_object(), "nodes must be an object");
 
@@ -172,6 +198,10 @@ async fn delta_wire_format() {
     let msg = client.read_msg().await;
     assert_eq!(msg["type"], "delta", "expected delta message");
     assert!(msg["session_id"].is_string(), "session_id must be a string");
+    assert!(
+        msg["session_mode"].is_string(),
+        "session_mode must be a string"
+    );
     assert!(msg["seq"].is_u64(), "seq must be u64");
     assert!(msg["updates"].is_array(), "updates must be array");
     assert!(msg["removed"].is_array(), "removed must be array");
@@ -361,12 +391,23 @@ async fn usage_message_wire_format() {
     let _snap = client.read_msg().await;
 
     // Broadcast a usage message directly (simulating what the wiring layer does)
-    let usage = eisen_core::types::UsageMessage::new("", "", 45_000, 200_000, None);
+    let usage = eisen_core::types::UsageMessage::new(
+        "",
+        "",
+        eisen_core::types::SessionMode::SingleAgent,
+        45_000,
+        200_000,
+        None,
+    );
     tcp::broadcast_line(&srv.delta_tx, &usage);
 
     let msg = client.read_msg().await;
     assert_eq!(msg["type"], "usage");
     assert!(msg["session_id"].is_string(), "session_id must be a string");
+    assert!(
+        msg["session_mode"].is_string(),
+        "session_mode must be a string"
+    );
     assert_eq!(msg["used"], 45_000);
     assert_eq!(msg["size"], 200_000);
     // cost should be absent (null/missing) when None
@@ -386,6 +427,7 @@ async fn usage_message_with_cost() {
     let usage = eisen_core::types::UsageMessage::new(
         "",
         "",
+        eisen_core::types::SessionMode::SingleAgent,
         45_000,
         200_000,
         Some(eisen_core::types::Cost {
@@ -397,6 +439,10 @@ async fn usage_message_with_cost() {
 
     let msg = client.read_msg().await;
     assert_eq!(msg["type"], "usage");
+    assert!(
+        msg["session_mode"].is_string(),
+        "session_mode must be a string"
+    );
     assert_eq!(msg["cost"]["amount"], 0.04);
     assert_eq!(msg["cost"]["currency"], "USD");
 }

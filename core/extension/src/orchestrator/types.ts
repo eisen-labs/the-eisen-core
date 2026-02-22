@@ -22,6 +22,7 @@ export interface WireSnapshot {
   type: "snapshot";
   agent_id: string;
   session_id: string;
+  session_mode: "single_agent" | "orchestrator";
   seq: number;
   nodes: Record<string, WireFileNode>;
 }
@@ -30,6 +31,7 @@ export interface WireDelta {
   type: "delta";
   agent_id: string;
   session_id: string;
+  session_mode: "single_agent" | "orchestrator";
   seq: number;
   updates: WireNodeUpdate[];
   removed: string[];
@@ -39,6 +41,7 @@ export interface WireUsage {
   type: "usage";
   agent_id: string;
   session_id: string;
+  session_mode: "single_agent" | "orchestrator";
   used: number;
   size: number;
   cost?: { amount: number; currency: string };

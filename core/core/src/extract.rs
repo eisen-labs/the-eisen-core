@@ -48,13 +48,13 @@ pub fn extract_upstream(line: &str, tracker: &mut ContextTracker) {
     // Check for terminal/output responses (no "method", have "result" with "output")
     if v.get("method").is_none() {
         if let Some(id) = v.get("id").and_then(|i| i.as_u64()) {
-            if tracker.take_pending_terminal_output(id) {
+            if let Some(session_id) = tracker.take_pending_terminal_output(id) {
                 if let Some(output) = v
                     .get("result")
                     .and_then(|r| r.get("output"))
                     .and_then(|o| o.as_str())
                 {
-                    extract_paths_from_terminal_output(output, tracker);
+                    extract_paths_from_terminal_output(output, &session_id, tracker);
                 }
             }
         }
@@ -70,13 +70,17 @@ pub fn extract_upstream(line: &str, tracker: &mut ContextTracker) {
 
     if method == AGENT_METHOD_NAMES.session_prompt {
         if let Some(params) = v.get("params") {
+            let session_id = session_id_from_params(params, tracker);
+            if let Some(id) = v.get("id").and_then(|i| i.as_u64()) {
+                tracker.record_prompt_request(id, &session_id);
+            }
             match serde_json::from_value::<PromptRequest>(params.clone()) {
                 Ok(req) => {
                     debug!(
                         prompt_blocks = req.prompt.len(),
                         "extracting from session/prompt"
                     );
-                    extract_from_prompt(&req, tracker);
+                    extract_from_prompt(&req, &session_id, tracker);
                 }
                 Err(e) => warn!(method, error = %e, "failed to deserialize PromptRequest"),
             }
@@ -115,7 +119,13 @@ pub fn extract_downstream(line: &str, tracker: &mut ContextTracker) {
             // This signals end-of-turn so the tracker can advance the turn counter.
             if let Some(stop_reason) = result.get("stopReason").and_then(|s| s.as_str()) {
                 debug!(stop_reason, "end-of-turn detected from PromptResponse");
-                tracker.end_turn();
+                let mut handled = false;
+                if let Some(id) = v.get("id").and_then(|i| i.as_u64()) {
+                    handled = tracker.end_turn_for_prompt_response(id);
+                }
+                if !handled {
+                    tracker.end_turn();
+                }
             }
         } else {
             debug!("downstream JSON-RPC response (no result)");
@@ -132,6 +142,7 @@ pub fn extract_downstream(line: &str, tracker: &mut ContextTracker) {
 
     if method == CLIENT_METHOD_NAMES.session_update {
         if let Some(params) = v.get("params") {
+            let session_id = session_id_from_params(params, tracker);
             match serde_json::from_value::<SessionNotification>(params.clone()) {
                 Ok(notif) => {
                     debug!(
@@ -139,34 +150,44 @@ pub fn extract_downstream(line: &str, tracker: &mut ContextTracker) {
                             format!("{:?}", std::mem::discriminant(&notif.update)).as_str(),
                         "extracting from session/update"
                     );
-                    extract_from_session_update(&notif.update, tracker);
+                    extract_from_session_update(&notif.update, &session_id, tracker);
                 }
                 Err(e) => warn!(method, error = %e, "failed to deserialize SessionNotification"),
             }
         }
     } else if method == CLIENT_METHOD_NAMES.fs_read_text_file {
         if let Some(params) = v.get("params") {
+            let session_id = session_id_from_params(params, tracker);
             match serde_json::from_value::<ReadTextFileRequest>(params.clone()) {
                 Ok(req) => {
                     let path = req.path.to_string_lossy().to_string();
                     debug!(path = path.as_str(), action = "read", "fs/read_text_file");
-                    tracker.file_access(&path, Action::Read);
+                    tracker.file_access_for_session(&session_id, &path, Action::Read);
                 }
                 Err(e) => warn!(method, error = %e, "failed to deserialize ReadTextFileRequest"),
             }
         }
     } else if method == CLIENT_METHOD_NAMES.terminal_output {
         if let Some(id) = v.get("id").and_then(|i| i.as_u64()) {
-            debug!(id, "tracking terminal/output request");
-            tracker.add_pending_terminal_output(id);
+            let session_id = v
+                .get("params")
+                .map(|params| session_id_from_params(params, tracker))
+                .unwrap_or_else(|| tracker.session_id().to_string());
+            debug!(
+                id,
+                session_id = session_id.as_str(),
+                "tracking terminal/output request"
+            );
+            tracker.add_pending_terminal_output(id, &session_id);
         }
     } else if method == CLIENT_METHOD_NAMES.fs_write_text_file {
         if let Some(params) = v.get("params") {
+            let session_id = session_id_from_params(params, tracker);
             match serde_json::from_value::<WriteTextFileRequest>(params.clone()) {
                 Ok(req) => {
                     let path = req.path.to_string_lossy().to_string();
                     debug!(path = path.as_str(), action = "write", "fs/write_text_file");
-                    tracker.file_access(&path, Action::Write);
+                    tracker.file_access_for_session(&session_id, &path, Action::Write);
                 }
                 Err(e) => warn!(method, error = %e, "failed to deserialize WriteTextFileRequest"),
             }
@@ -182,7 +203,7 @@ pub fn extract_downstream(line: &str, tracker: &mut ContextTracker) {
 ///
 /// - `ContentBlock::Resource` > embedded file content > `UserProvided`
 /// - `ContentBlock::ResourceLink` > file reference > `UserReferenced`
-fn extract_from_prompt(req: &PromptRequest, tracker: &mut ContextTracker) {
+fn extract_from_prompt(req: &PromptRequest, session_id: &str, tracker: &mut ContextTracker) {
     for block in &req.prompt {
         match block {
             ContentBlock::Resource(embedded) => {
@@ -197,7 +218,7 @@ fn extract_from_prompt(req: &PromptRequest, tracker: &mut ContextTracker) {
                         action = "user_provided",
                         "prompt: embedded resource"
                     );
-                    tracker.file_access(&path, Action::UserProvided);
+                    tracker.file_access_for_session(session_id, &path, Action::UserProvided);
                 }
             }
             ContentBlock::ResourceLink(link) => {
@@ -207,7 +228,7 @@ fn extract_from_prompt(req: &PromptRequest, tracker: &mut ContextTracker) {
                         action = "user_referenced",
                         "prompt: resource link"
                     );
-                    tracker.file_access(&path, Action::UserReferenced);
+                    tracker.file_access_for_session(session_id, &path, Action::UserReferenced);
                 }
             }
             _ => {} // Text, Image, Audio — no file paths
@@ -219,20 +240,24 @@ fn extract_from_prompt(req: &PromptRequest, tracker: &mut ContextTracker) {
 ///
 /// - `SessionUpdate::ToolCall` > new tool call with locations
 /// - `SessionUpdate::ToolCallUpdate` > update with optional locations
-fn extract_from_session_update(update: &SessionUpdate, tracker: &mut ContextTracker) {
+fn extract_from_session_update(
+    update: &SessionUpdate,
+    session_id: &str,
+    tracker: &mut ContextTracker,
+) {
     match update {
         SessionUpdate::ToolCall(tc) => {
-            extract_from_tool_call(tc, tracker);
+            extract_from_tool_call(tc, session_id, tracker);
         }
         SessionUpdate::ToolCallUpdate(tcu) => {
-            extract_from_tool_call_update(tcu, tracker);
+            extract_from_tool_call_update(tcu, session_id, tracker);
         }
         _ => {} // AgentMessageChunk, Plan, etc. — no file context
     }
 }
 
 /// Extract file locations from a new `ToolCall`.
-fn extract_from_tool_call(tc: &ToolCall, tracker: &mut ContextTracker) {
+fn extract_from_tool_call(tc: &ToolCall, session_id: &str, tracker: &mut ContextTracker) {
     let action = tool_kind_to_action(&tc.kind);
     debug!(
         tool_call_id = %tc.tool_call_id.0,
@@ -249,19 +274,23 @@ fn extract_from_tool_call(tc: &ToolCall, tracker: &mut ContextTracker) {
             action = format!("{:?}", action).as_str(),
             "tool_call location"
         );
-        tracker.file_access(&path, action);
+        tracker.file_access_for_session(session_id, &path, action);
     }
-    extract_diff_paths(&tc.content, Action::Write, tracker);
+    extract_diff_paths(&tc.content, Action::Write, session_id, tracker);
     if matches!(tc.kind, ToolKind::Search | ToolKind::Execute) {
-        extract_search_result_paths(&tc.content, tracker);
+        extract_search_result_paths(&tc.content, session_id, tracker);
     }
     if matches!(tc.kind, ToolKind::Execute) {
-        extract_shell_write_paths(&tc.title, tracker);
+        extract_shell_write_paths(&tc.title, session_id, tracker);
     }
 }
 
 /// Extract file locations from a `ToolCallUpdate`.
-fn extract_from_tool_call_update(tcu: &ToolCallUpdate, tracker: &mut ContextTracker) {
+fn extract_from_tool_call_update(
+    tcu: &ToolCallUpdate,
+    session_id: &str,
+    tracker: &mut ContextTracker,
+) {
     let action = tcu
         .fields
         .kind
@@ -291,13 +320,13 @@ fn extract_from_tool_call_update(tcu: &ToolCallUpdate, tracker: &mut ContextTrac
                 action = format!("{:?}", action).as_str(),
                 "tool_call_update location"
             );
-            tracker.file_access(&path, action);
+            tracker.file_access_for_session(session_id, &path, action);
         }
     }
     if let Some(content) = &tcu.fields.content {
-        extract_diff_paths(content, Action::Write, tracker);
+        extract_diff_paths(content, Action::Write, session_id, tracker);
         if is_search_or_execute {
-            extract_search_result_paths(content, tracker);
+            extract_search_result_paths(content, session_id, tracker);
         }
     }
 }
@@ -305,12 +334,17 @@ fn extract_from_tool_call_update(tcu: &ToolCallUpdate, tracker: &mut ContextTrac
 /// Extract file paths from `ToolCallContent::Diff` blocks.
 ///
 /// Diffs always represent file modifications, so action is `Write`.
-fn extract_diff_paths(content: &[ToolCallContent], action: Action, tracker: &mut ContextTracker) {
+fn extract_diff_paths(
+    content: &[ToolCallContent],
+    action: Action,
+    session_id: &str,
+    tracker: &mut ContextTracker,
+) {
     for item in content {
         if let ToolCallContent::Diff(diff) = item {
             let path = diff.path.to_string_lossy().to_string();
             debug!(path = path.as_str(), "diff content block");
-            tracker.file_access(&path, action);
+            tracker.file_access_for_session(session_id, &path, action);
         }
     }
 }
@@ -320,7 +354,11 @@ fn extract_diff_paths(content: &[ToolCallContent], action: Action, tracker: &mut
 /// Search tools (grep, glob, find, etc.) return results as text where each
 /// line typically starts with an absolute file path. We extract these paths
 /// and track them as `Action::Search` so they appear in the context graph.
-fn extract_search_result_paths(content: &[ToolCallContent], tracker: &mut ContextTracker) {
+fn extract_search_result_paths(
+    content: &[ToolCallContent],
+    session_id: &str,
+    tracker: &mut ContextTracker,
+) {
     for item in content {
         let text = match item {
             ToolCallContent::Content(c) => match &c.content {
@@ -337,7 +375,7 @@ fn extract_search_result_paths(content: &[ToolCallContent], tracker: &mut Contex
             if let Some(path) = extract_path_from_line(line) {
                 if std::path::Path::new(&path).extension().is_some() {
                     debug!(path = path.as_str(), "search result file");
-                    tracker.file_access(&path, Action::Search);
+                    tracker.file_access_for_session(session_id, &path, Action::Search);
                 }
             }
         }
@@ -368,12 +406,12 @@ fn extract_path_from_line(line: &str) -> Option<String> {
 /// Extract file write paths from shell command titles.
 ///
 /// Detects redirect patterns like `cat > file`, `echo >> file`, `tee file`.
-fn extract_shell_write_paths(title: &str, tracker: &mut ContextTracker) {
+fn extract_shell_write_paths(title: &str, session_id: &str, tracker: &mut ContextTracker) {
     for part in title.split("&&").chain(title.split(";")) {
         let part = part.trim();
         if let Some(path) = extract_redirect_target(part) {
             debug!(path = path.as_str(), "shell write target");
-            tracker.file_access(&path, Action::Write);
+            tracker.file_access_for_session(session_id, &path, Action::Write);
         }
     }
 }
@@ -395,7 +433,11 @@ fn extract_redirect_target(cmd: &str) -> Option<String> {
 }
 
 /// Extract file paths from terminal output text (find, grep, ls, etc.).
-fn extract_paths_from_terminal_output(output: &str, tracker: &mut ContextTracker) {
+fn extract_paths_from_terminal_output(
+    output: &str,
+    session_id: &str,
+    tracker: &mut ContextTracker,
+) {
     for line in output.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -403,7 +445,7 @@ fn extract_paths_from_terminal_output(output: &str, tracker: &mut ContextTracker
         }
         if let Some(path) = extract_path_from_line(line) {
             debug!(path = path.as_str(), "terminal output file");
-            tracker.file_access(&path, Action::Search);
+            tracker.file_access_for_session(session_id, &path, Action::Search);
         }
     }
 }
@@ -411,6 +453,14 @@ fn extract_paths_from_terminal_output(output: &str, tracker: &mut ContextTracker
 // ---------------------------------------------------------------------------
 // Mapping helpers
 // ---------------------------------------------------------------------------
+
+fn session_id_from_params(params: &serde_json::Value, tracker: &ContextTracker) -> String {
+    params
+        .get("sessionId")
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| tracker.session_id().to_string())
+}
 
 /// Map an ACP `ToolKind` to our internal `Action` type.
 pub fn tool_kind_to_action(kind: &ToolKind) -> Action {
@@ -440,7 +490,9 @@ mod tests {
     use crate::types::TrackerConfig;
 
     fn make_tracker() -> ContextTracker {
-        ContextTracker::new(TrackerConfig::default())
+        let mut tracker = ContextTracker::new(TrackerConfig::default());
+        tracker.set_session_id("s1".to_string());
+        tracker
     }
 
     // -- Embedded resource in prompt --------------------------------------
@@ -795,7 +847,7 @@ mod tests {
 
     #[test]
     fn auto_detect_session_id_from_new_session_response() {
-        let mut tracker = make_tracker();
+        let mut tracker = ContextTracker::new(TrackerConfig::default());
         assert_eq!(tracker.session_id(), "");
 
         let line = r#"{"jsonrpc":"2.0","id":1,"result":{"sessionId":"sess_abc123"}}"#;
@@ -805,7 +857,7 @@ mod tests {
 
     #[test]
     fn cli_session_id_not_overridden_by_auto_detect() {
-        let mut tracker = make_tracker();
+        let mut tracker = ContextTracker::new(TrackerConfig::default());
         tracker.set_session_id("cli-provided".to_string());
 
         let line = r#"{"jsonrpc":"2.0","id":1,"result":{"sessionId":"sess_from_agent"}}"#;
@@ -815,7 +867,7 @@ mod tests {
 
     #[test]
     fn session_id_not_set_from_non_session_response() {
-        let mut tracker = make_tracker();
+        let mut tracker = ContextTracker::new(TrackerConfig::default());
         // A response with stopReason but no sessionId should not set session_id
         let line = r#"{"jsonrpc":"2.0","id":1,"result":{"stopReason":"end_turn"}}"#;
         extract_downstream(line, &mut tracker);

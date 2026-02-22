@@ -59,9 +59,9 @@ export function activate(context: vscode.ExtensionContext) {
     console.log(`[Eisen] Agent removed, remaining agents: ${orchestrator?.agentCount}`);
   };
 
-  graphProvider.onAddAgent = async (agentType) => {
+  graphProvider.onAddAgent = async (agentType, sessionMode) => {
     try {
-      await chatProvider?.spawnAndConnect(agentType);
+      await chatProvider?.spawnAndConnect(agentType, sessionMode);
     } catch (e) {
       console.warn("[Eisen] Failed to spawn+connect agent:", e);
     }

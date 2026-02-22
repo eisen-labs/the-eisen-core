@@ -489,6 +489,40 @@ body {
   border: 1px solid var(--glass-border);
 }
 
+.agent-picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding: 0 var(--space-xs);
+}
+.agent-picker-label {
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.agent-mode-toggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--border-subtle);
+}
+.mode-chip {
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  padding: 4px 8px;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+}
+.mode-chip.active {
+  background: var(--accent-muted);
+  color: var(--accent);
+}
+
 /* In-panel containers */
 
 .input-row,
