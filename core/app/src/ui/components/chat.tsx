@@ -21,6 +21,8 @@ export interface ChatCb {
 
 const DROPDOWN =
   "absolute bottom-full mb-xs left-0 bg-raised backdrop-blur-xl border border-border-subtle rounded-xl p-md overflow-y-auto flex flex-col gap-sm";
+const DROPDOWN_RIGHT =
+  "absolute bottom-full mb-xs right-0 bg-raised backdrop-blur-xl border border-border-subtle rounded-xl p-md overflow-y-auto flex flex-col gap-sm";
 const OPTION = "flex items-center gap-md px-md h-9 text-sm rounded-lg cursor-pointer";
 const OPTION_ON = `${OPTION} bg-accent-muted text-accent`;
 const OPTION_OFF = `${OPTION} text-muted hover:text-foreground hover:bg-raised`;
@@ -40,8 +42,12 @@ export class Chat {
   private activeId: string | null = null;
   private msgMap = new Map<string, { from: string; text: string }[]>();
   private metaMap = new Map<string, SessionMeta>();
+  private connectedMap = new Map<string, boolean>();
   private streamEl: HTMLElement | null = null;
   private streamMap = new Map<string, string>();
+  private sendBtn: HTMLButtonElement;
+  private modelBtn: HTMLButtonElement;
+  private modelValue: HTMLElement;
 
   private files: FileSearchResult[] = [];
   private fileIdx = -1;
@@ -70,14 +76,24 @@ export class Chat {
       this.onInput();
     });
 
-    const sendBtn = (
+    this.sendBtn = (
       <button
         type="button"
         className="shrink-0 w-7 h-7 bg-accent text-white border-none rounded-lg flex items-center justify-center cursor-pointer hover:brightness-110 [&>svg]:w-4 [&>svg]:h-4"
         innerHTML={ICON.send}
       />
     ) as HTMLButtonElement;
-    sendBtn.addEventListener("click", () => this.doSend());
+    this.sendBtn.addEventListener("click", () => this.doSend());
+
+    this.modelValue = (<span className="truncate max-w-[140px]" />) as HTMLElement;
+    this.modelBtn = (
+      <button
+        type="button"
+        className="shrink-0 h-7 max-w-[180px] px-2.5 bg-raised backdrop-blur-xl border border-border-subtle rounded-lg flex items-center gap-1.5 text-xs text-muted hover:text-foreground"
+      />
+    ) as HTMLButtonElement;
+    this.modelBtn.append((<span className="text-faint">Model</span>) as HTMLElement, this.modelValue);
+    this.modelBtn.addEventListener("click", () => this.toggle("model"));
 
     const settingsBtn = (
       <button
@@ -91,6 +107,7 @@ export class Chat {
     this.dropdowns = {
       cmd: (<div className={`${DROPDOWN} max-h-[200px] hidden z-[11]`} />) as HTMLElement,
       file: (<div className={`${DROPDOWN} max-h-[400px] hidden z-10`} />) as HTMLElement,
+      model: (<div className={`${DROPDOWN_RIGHT} max-h-[240px] hidden z-[12]`} />) as HTMLElement,
       settings: (
         <div className="absolute top-10 left-md bg-raised backdrop-blur-xl border border-border-subtle rounded-xl p-md hidden z-[13] flex flex-col gap-sm" />
       ) as HTMLElement,
@@ -104,6 +121,7 @@ export class Chat {
       const el = (e.target as HTMLElement).closest("[data-i]") as HTMLElement | null;
       if (el) this.pickFile(Number(el.dataset.i));
     });
+    this.dropdowns.model.addEventListener("mousedown", (e) => e.preventDefault());
     this.dropdowns.settings.addEventListener("mousedown", (e) => e.preventDefault());
 
     this.chipBar = (<div className="flex flex-wrap gap-sm px-md py-sm shrink-0 empty:hidden" />) as HTMLElement;
@@ -111,7 +129,7 @@ export class Chat {
     const inputRow = (
       <div className="relative flex items-end shrink-0 mx-md mb-md bg-raised backdrop-blur-xl border border-border-subtle rounded-xl p-sm gap-xs" />
     ) as HTMLElement;
-    inputRow.append(this.dropdowns.cmd, this.dropdowns.file, this.input, sendBtn);
+    inputRow.append(this.dropdowns.cmd, this.dropdowns.file, this.dropdowns.model, this.input, this.modelBtn, this.sendBtn);
 
     this.chatView = (<div className="relative flex flex-col h-full" />) as HTMLElement;
     this.chatView.append(
@@ -143,6 +161,8 @@ export class Chat {
     this.chatView.style.display = "";
     this.pickerView.style.display = "none";
     this.renderMessages();
+    this.updateModelButton();
+    this.updateSendBtn();
   }
 
   clearAgent(): void {
@@ -151,6 +171,26 @@ export class Chat {
     this.emptyView.style.display = "";
     this.chatView.style.display = "none";
     this.pickerView.style.display = "none";
+    this.updateSendBtn();
+  }
+
+  setConnected(id: string, connected: boolean): void {
+    this.connectedMap.set(id, connected);
+    if (id === this.activeId) this.updateSendBtn();
+  }
+
+  private updateSendBtn(): void {
+    const connected = this.activeId ? (this.connectedMap.get(this.activeId) ?? false) : false;
+    this.sendBtn.disabled = !connected;
+    if (connected) {
+      this.sendBtn.title = "";
+      this.sendBtn.className =
+        "shrink-0 w-7 h-7 bg-accent text-white border-none rounded-lg flex items-center justify-center cursor-pointer hover:brightness-110 [&>svg]:w-4 [&>svg]:h-4";
+    } else {
+      this.sendBtn.title = "Agent loading…";
+      this.sendBtn.className =
+        "shrink-0 w-7 h-7 bg-accent/40 text-white/40 border-none rounded-lg flex items-center justify-center cursor-not-allowed [&>svg]:w-4 [&>svg]:h-4";
+    }
   }
 
   setAgents(a: AvailableAgent[]): void {
@@ -237,6 +277,7 @@ export class Chat {
   setMeta(meta: SessionMeta, id?: string): void {
     const key = id || this.activeId;
     if (key) this.metaMap.set(key, meta);
+    if (key && key === this.activeId) this.updateModelButton();
   }
 
   showFiles(results: FileSearchResult[]): void {
@@ -312,6 +353,49 @@ export class Chat {
         return;
       }
       this.renderSettings(meta);
+    }
+
+    if (which === "model") {
+      const meta = this.activeId ? this.metaMap.get(this.activeId) : null;
+      const models = meta?.models?.availableModels ?? [];
+      if (!meta || !models.length) {
+        this.open = null;
+        return;
+      }
+      this.renderModelPicker(meta);
+    }
+  }
+
+  private renderModelPicker(meta: SessionMeta): void {
+    const p = this.dropdowns.model;
+    p.innerHTML = "";
+    const models = meta.models?.availableModels ?? [];
+    for (const m of models) {
+      const active = m.modelId === meta.models?.currentModelId;
+      const row = (<div className={active ? OPTION_ON : OPTION_OFF}>{m.name || m.modelId}</div>) as HTMLElement;
+      row.addEventListener("click", () => {
+        if (meta.models) meta.models.currentModelId = m.modelId;
+        this.cb.onModelChange(m.modelId);
+        this.renderModelPicker(meta);
+        this.updateModelButton();
+      });
+      p.append(row);
+    }
+    p.style.display = "block";
+  }
+
+  private updateModelButton(): void {
+    const meta = this.activeId ? this.metaMap.get(this.activeId) : null;
+    const models = meta?.models?.availableModels ?? [];
+    const currentId = meta?.models?.currentModelId;
+    const current = models.find((m) => m.modelId === currentId);
+    const label = current?.name || currentId || (models[0]?.name ?? models[0]?.modelId) || "";
+    this.modelValue.textContent = label || "Not set";
+    this.modelBtn.disabled = models.length === 0;
+    if (this.modelBtn.disabled) {
+      this.modelBtn.classList.add("opacity-50", "cursor-not-allowed");
+    } else {
+      this.modelBtn.classList.remove("opacity-50", "cursor-not-allowed");
     }
   }
 
@@ -448,7 +532,8 @@ export class Chat {
 
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (this.input.value.trim()) this.doSend();
+      const connected = this.activeId ? (this.connectedMap.get(this.activeId) ?? false) : false;
+      if (this.input.value.trim() && connected) this.doSend();
       return;
     }
     if (e.key === "Enter" && e.shiftKey && this.input.selectionStart === 0) {

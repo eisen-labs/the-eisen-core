@@ -100,69 +100,14 @@ function send(message: Record<string, unknown>): void {
   process.stdout.write(JSON.stringify(message) + "\n");
 }
 
-function normalizeAction(action?: string): "read" | "write" | "search" {
-  if (action === "write") return "write";
-  if (action === "search") return "search";
-  return "read";
-}
-
-function toMergedSnapshot(msg: any) {
-  const nodes: Record<string, any> = {};
-  if (msg?.nodes && typeof msg.nodes === "object") {
-    for (const [path, node] of Object.entries<any>(msg.nodes)) {
-      const action = normalizeAction(node?.last_action);
-      nodes[path] = {
-        inContext: Boolean(node?.in_context),
-        changed: action === "write",
-        lastAction: action,
-      };
-    }
-  }
-  return {
-    type: "mergedSnapshot",
-    seq: msg?.seq ?? 0,
-    nodes,
-    calls: [],
-    agents: [],
-  };
-}
-
-function toMergedDelta(msg: any) {
-  const updates: Array<Record<string, any>> = [];
-  if (Array.isArray(msg?.updates)) {
-    for (const u of msg.updates) {
-      const action = normalizeAction(u?.last_action);
-      updates.push({
-        id: u?.path,
-        action,
-        inContext: u?.in_context,
-        changed: action === "write",
-      });
-    }
-  }
-  if (Array.isArray(msg?.removed)) {
-    for (const path of msg.removed) {
-      updates.push({ id: path, action: "remove" });
-    }
-  }
-  return {
-    type: "mergedDelta",
-    seq: msg?.seq ?? 0,
-    updates,
-    agents: [],
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Global state
 // ---------------------------------------------------------------------------
 
 const globalState = new Memento();
 const orchestrator = new EisenOrchestrator();
-const coreClients = new Map<string, CoreClient>();
 const useLegacyGraph = false;
 const fileSearchService = new FileSearchService(cwd);
-const useLegacyGraph = false;
 
 const SELECTED_AGENT_KEY = "eisen.selectedAgent";
 const SELECTED_MODE_KEY = "eisen.selectedMode";
@@ -203,7 +148,9 @@ interface AgentSession {
   agentType: string;
   label: string;
   sessionMode: SessionMode;
-  acpSessionId: string;
+  /** Null until the first message is sent and newSession() completes. */
+  acpSessionId: string | null;
+  hasAcpSession: boolean;
   coreSessionId: string | null;
   hasRestoredModeModel: boolean;
   stderrBuffer: string;
@@ -304,6 +251,12 @@ function setupClientHandlers(provider: ProviderClient): void {
     if (state === "connected") {
       provider.connected = true;
       provider.instanceId = client.instanceId;
+      if (currentInstanceKey) {
+        const active = agentSessions.get(currentInstanceKey);
+        if (active && active.agentType === provider.agentType) {
+          sendSessionMetadata(active.key);
+        }
+      }
     }
     if (state === "disconnected") {
       provider.connected = false;
@@ -392,7 +345,7 @@ function getOrCreateProvider(agentType: string): ProviderClient {
   return provider;
 }
 
-async function createSession(agentType: string, sessionMode: SessionMode): Promise<AgentSession> {
+function createSession(agentType: string, sessionMode: SessionMode, orchestratorKey?: string): AgentSession {
   if (agentSessions.size >= MAX_AGENT_INSTANCES) {
     throw new Error(
       `Maximum number of concurrent agents (${MAX_AGENT_INSTANCES}) reached. ` +
@@ -400,20 +353,13 @@ async function createSession(agentType: string, sessionMode: SessionMode): Promi
     );
   }
 
-  const provider = getOrCreateProvider(agentType);
-  if (!provider.client.isConnected()) {
-    await provider.client.connect();
-  }
-
-  const workingDir = getCwd();
-  const resp = await provider.client.newSession(workingDir);
-  const acpSessionId = resp.sessionId;
+  // Create the provider eagerly so its process starts and state-change handlers
+  // are wired up, but do NOT connect yet — connection is deferred to first send.
+  getOrCreateProvider(agentType);
 
   const count = (instanceCounters.get(agentType) ?? 0) + 1;
   instanceCounters.set(agentType, count);
-  const short = agentShortName(agentType);
-  const key = `${short}${count}`;
-
+  const key = `${agentShortName(agentType)}${count}`;
   const color = AGENT_COLORS[nextColorIndex % AGENT_COLORS.length];
   nextColorIndex++;
 
@@ -422,7 +368,8 @@ async function createSession(agentType: string, sessionMode: SessionMode): Promi
     agentType,
     label: key,
     sessionMode,
-    acpSessionId,
+    acpSessionId: null,
+    hasAcpSession: false,
     coreSessionId: null,
     hasRestoredModeModel: false,
     stderrBuffer: "",
@@ -436,7 +383,6 @@ async function createSession(agentType: string, sessionMode: SessionMode): Promi
   };
 
   agentSessions.set(key, instance);
-  sessionByAcpId.set(acpSessionId, key);
   return instance;
 }
 
@@ -492,6 +438,7 @@ function toMergedDelta(msg: any) {
     agents: [],
   };
 }
+
 
 function updateGraphSelection(): void {
   const active = getActiveSession();
@@ -566,7 +513,7 @@ async function ensureCoreSession(session: AgentSession): Promise<void> {
 
   await core.rpc("set_active_session", { agent_id: agentId, session_id: session.coreSessionId });
 
-  if (currentInstanceKey === session.key) {
+  if (currentInstanceKey === session.key && session.coreSessionId) {
     core.setStreamFilter({ sessionId: session.coreSessionId });
     core.requestSnapshot(session.coreSessionId);
   }
@@ -607,134 +554,6 @@ async function registerAgentWithOrchestrator(client: ACPClient): Promise<void> {
   }
 }
 
-async function ensureCoreClient(inst: AgentInstance): Promise<CoreClient | null> {
-  if (coreClients.has(inst.key)) return coreClients.get(inst.key) ?? null;
-  const port = await inst.client.waitForTcpPort().catch(() => null);
-  if (!port) return null;
-  const core = new CoreClient((msg) => {
-    if (currentInstanceKey !== inst.key) return;
-    if (msg?.type === "snapshot") {
-      send(toMergedSnapshot(msg));
-    } else if (msg?.type === "delta") {
-      send(toMergedDelta(msg));
-    } else if (msg?.type === "usage") {
-      send({ type: "usageUpdate", used: msg.used, size: msg.size, cost: msg.cost });
-    }
-  });
-  core.connect(port);
-  coreClients.set(inst.key, core);
-  return core;
-}
-
-const CORE_SESSION_RETRY_COOLDOWN_MS = 10_000;
-
-async function ensureCoreSession(inst: AgentInstance): Promise<void> {
-  // If already set up, just refresh the stream filter and return
-  if (inst.coreSessionReady && inst.coreSessionId) {
-    const core = coreClients.get(inst.key);
-    if (core) {
-      core.setStreamFilter({ sessionId: inst.coreSessionId });
-      core.requestSnapshot(inst.coreSessionId);
-    }
-    return;
-  }
-
-  // Deduplicate concurrent calls — return the in-flight promise if one exists
-  if (inst.coreSessionPromise) {
-    return inst.coreSessionPromise;
-  }
-
-  // Cooldown: don't retry too quickly after a failure
-  const now = Date.now();
-  if (inst.coreSessionLastAttempt > 0 && now - inst.coreSessionLastAttempt < CORE_SESSION_RETRY_COOLDOWN_MS) {
-    return;
-  }
-
-  inst.coreSessionLastAttempt = now;
-  inst.coreSessionPromise = doEnsureCoreSession(inst).finally(() => {
-    inst.coreSessionPromise = null;
-  });
-
-  return inst.coreSessionPromise;
-}
-
-/**
- * Ensure the ACP client is connected and has an active session.
- * This is the minimum required before sending a message. It does NOT
- * set up the eisen-core graph session (that's handled separately).
- */
-async function ensureAcpSession(inst: AgentInstance): Promise<void> {
-  const state = inst.client.getState();
-  if (state === "connecting") {
-    await new Promise<void>((resolve, reject) => {
-      const unsub = inst.client.setOnStateChange((s) => {
-        if (s === "connected") { unsub(); resolve(); }
-        else if (s === "disconnected" || s === "error") { unsub(); reject(new Error(`Connection failed: ${s}`)); }
-      });
-    });
-  } else if (state !== "connected") {
-    await inst.client.connect();
-  }
-
-  if (!inst.hasAcpSession) {
-    const workingDir = getCwd();
-    const resp = await inst.client.newSession(workingDir);
-    inst.acpSessionId = resp.sessionId;
-    inst.hasAcpSession = true;
-    sendSessionMetadata();
-  } else if (inst.acpSessionId) {
-    inst.client.setActiveSession(inst.acpSessionId);
-  }
-}
-
-async function doEnsureCoreSession(inst: AgentInstance): Promise<void> {
-  // ACP connection + session must exist first
-  await ensureAcpSession(inst);
-
-  const core = await ensureCoreClient(inst);
-  if (!core) return;
-
-  const agentId = inst.client.instanceId;
-  if (!agentId) return;
-
-  if (inst.sessionMode === "single_agent") {
-    if (inst.acpSessionId && inst.coreSessionId !== inst.acpSessionId) {
-      inst.coreSessionId = inst.acpSessionId;
-    }
-  }
-
-  if (!inst.coreSessionId) {
-    inst.coreSessionId =
-      inst.sessionMode === "single_agent" && inst.acpSessionId
-        ? inst.acpSessionId
-        : `${agentId}-${Date.now().toString(36)}`;
-  }
-
-  const session = await core.rpc("create_session", {
-    agent_id: agentId,
-    session_id: inst.coreSessionId,
-    mode: inst.sessionMode,
-  });
-  inst.coreSessionId = session?.session_id ?? inst.coreSessionId;
-
-  const coreSessionId = inst.coreSessionId;
-  if (!coreSessionId) return;
-  if (inst.sessionMode === "orchestrator" && inst.acpSessionId) {
-    const providerKey = { agent_id: agentId, session_id: inst.acpSessionId };
-    const providers = [providerKey];
-    await core.rpc("set_orchestrator_providers", {
-      agent_id: agentId,
-      session_id: coreSessionId,
-      providers,
-    });
-  }
-
-  await core.rpc("set_active_session", { agent_id: agentId, session_id: coreSessionId });
-  core.setStreamFilter({ sessionId: coreSessionId });
-  core.requestSnapshot(coreSessionId);
-
-  inst.coreSessionReady = true;
-}
 
 // ---------------------------------------------------------------------------
 // Session update handler
@@ -1036,7 +855,7 @@ function switchToInstance(instanceKey: string): void {
   currentInstanceKey = instanceKey;
   globalState.update(SELECTED_AGENT_KEY, target.agentType);
 
-  if (provider && target.acpSessionId) {
+  if (provider && target.acpSessionId && target.hasAcpSession) {
     try {
       provider.client.setActiveSession(target.acpSessionId);
     } catch {}
@@ -1053,15 +872,12 @@ function switchToInstance(instanceKey: string): void {
   });
   sendInstanceList();
 
-  if (provider?.client.isConnected()) {
+  if (provider?.client.isConnected() && target.hasAcpSession) {
     sendSessionMetadata(target.key);
   } else {
     send({ type: "sessionMetadata", modes: null, models: null });
   }
 
-  ensureCoreSession(target).catch((e) =>
-    console.error("[Host] Failed to initialize core session:", e),
-  );
   updateGraphSelection();
 }
 
@@ -1069,15 +885,40 @@ function switchToInstance(instanceKey: string): void {
 // Message handlers
 // ---------------------------------------------------------------------------
 
-async function handleSpawnAgent(agentType: string, sessionMode: SessionMode = "single_agent"): Promise<void> {
+function handleSpawnAgent(agentType: string, sessionMode: SessionMode = "single_agent"): void {
+  let instance: AgentSession;
   try {
-    const instance = await createSession(agentType, sessionMode);
+    instance = createSession(agentType, sessionMode);
     switchToInstance(instance.key);
-    await ensureCoreSession(instance);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to spawn agent";
     send({ type: "error", text: message });
+    return;
   }
+
+  // Eagerly connect in the background so the session is ready by the time
+  // the user types their first message.
+  const provider = getOrCreateProvider(agentType);
+  (async () => {
+    try {
+      if (!provider.client.isConnected()) {
+        await provider.client.connect();
+      }
+      if (!instance.hasAcpSession) {
+        const resp = await provider.client.newSession(getCwd());
+        instance.acpSessionId = resp.sessionId;
+        instance.hasAcpSession = true;
+        sessionByAcpId.set(instance.acpSessionId, instance.key);
+        sendInstanceList();
+        sendSessionMetadata(instance.key);
+      }
+      ensureCoreSession(instance).catch((e) =>
+        console.error("[Host] ensureCoreSession failed (non-fatal):", e),
+      );
+    } catch (e) {
+      console.error("[Host] Background connect failed:", e);
+    }
+  })();
 }
 
 function handleCloseInstance(instanceKey: string): void {
@@ -1094,7 +935,7 @@ function handleCloseInstance(instanceKey: string): void {
       .catch(() => {});
   }
 
-  sessionByAcpId.delete(instance.acpSessionId);
+  if (instance.acpSessionId) sessionByAcpId.delete(instance.acpSessionId);
 
   agentSessions.delete(instanceKey);
 
@@ -1157,7 +998,20 @@ async function handleUserMessage(
     if (!provider.client.isConnected()) {
       await provider.client.connect();
     }
-    await ensureCoreSession(inst);
+
+    if (!inst.hasAcpSession) {
+      const resp = await provider.client.newSession(getCwd());
+      inst.acpSessionId = resp.sessionId;
+      inst.hasAcpSession = true;
+      sessionByAcpId.set(inst.acpSessionId, inst.key);
+      sendSessionMetadata(inst.key);
+    } else if (inst.acpSessionId) {
+      provider.client.setActiveSession(inst.acpSessionId);
+    }
+
+    ensureCoreSession(inst).catch((e) =>
+      console.error("[Host] ensureCoreSession failed (non-fatal):", e),
+    );
 
     inst.streamingText = "";
     inst.stderrBuffer = "";
@@ -1170,7 +1024,7 @@ async function handleUserMessage(
       isDirectory: c.isDirectory,
       range: c.range,
     }));
-    const response = await provider.client.sendMessage(text, chipData, inst.acpSessionId);
+    const response = await provider.client.sendMessage(text, chipData, inst.acpSessionId ?? undefined);
 
     inst.isStreaming = false;
     if (inst.streamingText.length === 0) {
@@ -1183,7 +1037,6 @@ async function handleUserMessage(
         instanceId: inst.key,
         stopReason: response.stopReason,
         html: renderedHtml,
-        instanceId: inst.key,
       });
     }
     inst.streamingText = "";
@@ -1203,7 +1056,7 @@ async function handleModeChange(modeId: string): Promise<void> {
   const provider = providerClients.get(inst.agentType);
   if (!provider) return;
   try {
-    await provider.client.setMode(modeId, inst.acpSessionId);
+    await provider.client.setMode(modeId, inst.acpSessionId ?? undefined);
     const key = `${SELECTED_MODE_KEY}.${inst.agentType}`;
     await globalState.update(key, modeId);
     sendSessionMetadata(inst.key);
@@ -1218,7 +1071,7 @@ async function handleModelChange(modelId: string): Promise<void> {
   const provider = providerClients.get(inst.agentType);
   if (!provider) return;
   try {
-    await provider.client.setModel(modelId, inst.acpSessionId);
+    await provider.client.setModel(modelId, inst.acpSessionId ?? undefined);
     const key = `${SELECTED_MODEL_KEY}.${inst.agentType}`;
     await globalState.update(key, modelId);
     sendSessionMetadata(inst.key);
@@ -1266,7 +1119,7 @@ function sendSessionMetadata(sessionKey?: string): void {
   if (!inst) return;
   const provider = providerClients.get(inst.agentType);
   if (!provider) return;
-  const metadata = provider.client.getSessionMetadata(inst.acpSessionId);
+  const metadata = provider.client.getSessionMetadata(inst.acpSessionId ?? undefined);
   send({
     type: "sessionMetadata",
     modes: metadata?.modes ?? null,
@@ -1285,7 +1138,7 @@ function sendSessionMetadata(sessionKey?: string): void {
 async function restoreSavedModeAndModel(inst: AgentSession): Promise<void> {
   const provider = providerClients.get(inst.agentType);
   if (!provider) return;
-  const metadata = provider.client.getSessionMetadata(inst.acpSessionId);
+  const metadata = provider.client.getSessionMetadata(inst.acpSessionId ?? undefined);
   const availableModes = Array.isArray(metadata?.modes?.availableModes) ? metadata!.modes!.availableModes : [];
   const availableModels = Array.isArray(metadata?.models?.availableModels) ? metadata!.models!.availableModels : [];
 
@@ -1298,12 +1151,12 @@ async function restoreSavedModeAndModel(inst: AgentSession): Promise<void> {
   let modelRestored = false;
 
   if (savedModeId && availableModes.some((m: any) => m?.id === savedModeId)) {
-    await provider.client.setMode(savedModeId, inst.acpSessionId);
+    await provider.client.setMode(savedModeId, inst.acpSessionId ?? undefined);
     modeRestored = true;
   }
 
   if (savedModelId && availableModels.some((m: any) => m?.modelId === savedModelId)) {
-    await provider.client.setModel(savedModelId, inst.acpSessionId);
+    await provider.client.setModel(savedModelId, inst.acpSessionId ?? undefined);
     modelRestored = true;
   }
 
@@ -1398,15 +1251,42 @@ async function handleOrchestrate(
       createACPClient: (agentType: string) => {
         const agent = getAgent(agentType);
         if (!agent) throw new Error(`Unknown agent for orchestration: ${agentType}`);
-        const instance = createInstance(agentType, "single_agent", instanceId ?? undefined);
-        clientInstanceMap.set(instance.client, instance.key);
+
+        // Each sub-agent gets its own dedicated client for concurrent execution.
+        const count = (instanceCounters.get(agentType) ?? 0) + 1;
+        instanceCounters.set(agentType, count);
+        const key = `${agentShortName(agentType)}${count}`;
+        const color = AGENT_COLORS[nextColorIndex % AGENT_COLORS.length];
+        nextColorIndex++;
+
+        const client = new ACPClient({ agentConfig: agent, hostDir: process.execPath });
+        const session: AgentSession = {
+          key,
+          agentType,
+          label: key,
+          sessionMode: "single_agent",
+          acpSessionId: null,
+          hasAcpSession: false,
+          coreSessionId: null,
+          hasRestoredModeModel: false,
+          stderrBuffer: "",
+          streamingText: "",
+          color,
+          isStreaming: false,
+          coreSessionReady: false,
+          coreSessionPromise: null,
+          coreSessionLastAttempt: 0,
+          orchestratorKey: instanceId ?? undefined,
+        };
+        agentSessions.set(key, session);
+        clientInstanceMap.set(client, key);
         sendInstanceList();
-        return instance.client;
+        return client;
       },
-      onSubtaskStart: (client, subtask, agentId) => {
+      onSubtaskStart: (client, subtask, _agentId) => {
         const key = clientInstanceMap.get(client);
         if (!key) return;
-        const inst = agentInstances.get(key);
+        const inst = agentSessions.get(key);
         if (inst) inst.isStreaming = true;
         send({
           method: "chatMessage",
@@ -1421,7 +1301,7 @@ async function handleOrchestrate(
       onSubtaskComplete: (client, subtask, agentOutput) => {
         const key = clientInstanceMap.get(client);
         if (!key) return;
-        const inst = agentInstances.get(key);
+        const inst = agentSessions.get(key);
         if (inst) inst.isStreaming = false;
         send({
           method: "chatMessage",
@@ -1430,8 +1310,7 @@ async function handleOrchestrate(
         sendInstanceList();
       },
       onPendingApproval: (data) => {
-        const vi = instanceId ? virtualInstances.get(instanceId) : undefined;
-        if (vi) vi.pendingApproval = { ...data, config };
+        pendingOrchestration = { ...data, config };
       },
     };
 
@@ -1529,7 +1408,7 @@ async function handleMessage(message: Record<string, any>): Promise<void> {
       const active = getActiveSession();
       const provider = active ? providerClients.get(active.agentType) : null;
       if (active && provider) {
-        await provider.client.cancel(active.acpSessionId);
+        await provider.client.cancel(active.acpSessionId ?? undefined);
       }
       break;
     }

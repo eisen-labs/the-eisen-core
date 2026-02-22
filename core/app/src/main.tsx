@@ -449,6 +449,13 @@ class Eisen {
           this.topBar.apply(agents);
           for (const i of instances) {
             this.topBar.setStreaming(i.key, !!i.isStreaming);
+            this.chat.setConnected(i.key, !!i.connected);
+          }
+          const activeKey = msg.currentInstanceKey as string | null | undefined;
+          const selectedKey = activeKey ?? this.topBar.getSelected();
+          if (selectedKey && instances.some((i) => i.key === selectedKey)) {
+            this.chat.selectAgent(selectedKey);
+            this.topBar.select(selectedKey);
           }
         }
         return;

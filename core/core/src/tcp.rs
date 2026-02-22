@@ -477,7 +477,10 @@ async fn handle_rpc_request(
                     }
                 }
                 Err(err) => {
-                    warn!(elapsed_ms = rpc_start.elapsed().as_millis(), "create_session failed");
+                    warn!(
+                        elapsed_ms = rpc_start.elapsed().as_millis(),
+                        "create_session failed"
+                    );
                     RpcResponse::error(id, 500, err.to_string())
                 }
             }
@@ -541,11 +544,17 @@ async fn handle_rpc_request(
                     RpcResponse::result(id, serde_json::json!({"active": true}))
                 }
                 Ok(false) => {
-                    debug!(elapsed_ms = rpc_start.elapsed().as_millis(), "set_active_session not found");
+                    debug!(
+                        elapsed_ms = rpc_start.elapsed().as_millis(),
+                        "set_active_session not found"
+                    );
                     RpcResponse::error(id, 404, "session not found".to_string())
                 }
                 Err(err) => {
-                    warn!(elapsed_ms = rpc_start.elapsed().as_millis(), "set_active_session failed");
+                    warn!(
+                        elapsed_ms = rpc_start.elapsed().as_millis(),
+                        "set_active_session failed"
+                    );
                     RpcResponse::error(id, 500, err.to_string())
                 }
             }
