@@ -33,6 +33,7 @@ import { z } from "zod";
 import { WorkspaceDB } from "../src/db/workspace-db";
 import { DEFAULT_PROMPTS } from "../src/workflow/agents";
 import type { OptimizedPromptStep } from "../src/db/workspace-db";
+import { createMonitoredAgent } from "../src/paid";
 
 // ---------------------------------------------------------------------------
 // CLI arg parsing
@@ -505,11 +506,18 @@ specific repository. You receive a repository profile and the current default pr
 async function generateOptimizedPrompts(profile: RepoProfile): Promise<OptimizedPromptsOutput> {
   if (!asJson) console.log(`Phase 3: Generating prompts with ${model}...`);
 
-  const metaAgent = new Agent({
+  let metaAgent = new Agent({
     id: "prompt-optimizer",
     name: "Prompt Optimizer",
     model,
     instructions: META_OPTIMIZER_INSTRUCTIONS,
+  });
+
+  // Wrap with Paid monitoring if configured
+  metaAgent = createMonitoredAgent(metaAgent, {
+    eventName: "prompt_optimize",
+    customerId: profile.repoPath,
+    productId: "eisen-prompt-optimizer",
   });
 
   const result = await metaAgent.generate(buildMetaOptimizerInput(profile), {

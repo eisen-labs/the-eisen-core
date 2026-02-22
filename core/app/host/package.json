@@ -14,9 +14,11 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.14.1",
     "@mastra/core": "^1.5.0",
+    "@paid-ai/paid-node": "^0.5.1",
     "ai": "^6.0.97",
     "fast-glob": "^3.3.0",
     "marked": "^17.0.1",
+    "openai": "^6.22.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {

@@ -100,6 +100,10 @@ const projectRoot = path.resolve(path.dirname(process.execPath), "..", "..", "..
 loadEnvFile(path.join(projectRoot, ".env"));
 loadEnvFile(path.join(cwd, ".env"));
 
+// Initialize Paid tracing after env is loaded
+import { initializePaidTracing } from "./paid";
+initializePaidTracing();
+
 // ---------------------------------------------------------------------------
 // IPC
 // ---------------------------------------------------------------------------

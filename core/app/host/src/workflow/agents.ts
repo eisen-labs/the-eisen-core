@@ -20,6 +20,7 @@
 
 import { Agent } from "@mastra/core/agent";
 import type { OptimizedPromptStep } from "../db";
+import { createMonitoredAgent, type PaidSignalData } from "../paid";
 
 // ---------------------------------------------------------------------------
 // Default static system prompts
@@ -98,6 +99,16 @@ export interface AgentModelConfig {
    * falls back to the corresponding DEFAULT_PROMPTS entry.
    */
   optimizedPrompts?: Partial<Record<OptimizedPromptStep, string>>;
+  /**
+   * Optional Paid monitoring configuration. If provided, agents will send signals
+   * to Paid for usage tracking and billing. Requires PAID_API_KEY env var.
+   */
+  paid?: {
+    /** Customer identifier for Paid (e.g., workspace path or user ID) */
+    customerId: string;
+    /** Product identifier for Paid (e.g., "eisen-orchestrator") */
+    productId: string;
+  };
 }
 
 export interface OrchestratorAgents {
@@ -145,6 +156,32 @@ export function createAgents(config: AgentModelConfig): OrchestratorAgents {
     model: config.model,
     instructions: p.progressEval ?? DEFAULT_PROMPTS.progressEval,
   });
+
+  // Wrap with Paid monitoring if configured
+  if (config.paid) {
+    return {
+      taskDecompose: createMonitoredAgent(taskDecompose, {
+        eventName: "task_decompose",
+        customerId: config.paid.customerId,
+        productId: config.paid.productId,
+      }),
+      agentSelect: createMonitoredAgent(agentSelect, {
+        eventName: "agent_select",
+        customerId: config.paid.customerId,
+        productId: config.paid.productId,
+      }),
+      promptBuild: createMonitoredAgent(promptBuild, {
+        eventName: "prompt_build",
+        customerId: config.paid.customerId,
+        productId: config.paid.productId,
+      }),
+      progressEval: createMonitoredAgent(progressEval, {
+        eventName: "progress_eval",
+        customerId: config.paid.customerId,
+        productId: config.paid.productId,
+      }),
+    };
+  }
 
   return { taskDecompose, agentSelect, promptBuild, progressEval };
 }

@@ -139,7 +139,15 @@ export async function orchestrate(config: OrchestrationConfig): Promise<Orchestr
   ]);
 
   // Build agents with any DB-stored prompt overrides applied
-  const agents = config._agents ?? createAgents({ model, optimizedPrompts });
+  // Also enable Paid monitoring if PAID_API_KEY is configured
+  const agents = config._agents ?? createAgents({
+    model,
+    optimizedPrompts,
+    paid: {
+      customerId: workspacePath,
+      productId: "eisen-orchestrator",
+    },
+  });
 
   // -----------------------------------------------------------------------
   // 2. Decompose task

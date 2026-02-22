@@ -9,6 +9,7 @@
 import { z } from "zod";
 import { Agent } from "@mastra/core/agent";
 import type { WorkspaceDB } from "../db";
+import { createMonitoredAgent } from "../paid";
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -42,7 +43,7 @@ export async function refreshStaleRegionInsights(
   touchedRegions: string[],
   model: string,
 ): Promise<void> {
-  const insightAgent = new Agent({
+  let insightAgent = new Agent({
     id: "region-insight" as const,
     name: "Region Insight",
     model,
@@ -52,6 +53,13 @@ export async function refreshStaleRegionInsights(
       "produce a concise description of what the region does, the coding " +
       "conventions it follows, and its external dependencies. " +
       "Be specific and factual — avoid generic statements.",
+  });
+
+  // Wrap with Paid monitoring if configured
+  insightAgent = createMonitoredAgent(insightAgent, {
+    eventName: "region_insight",
+    customerId: workspacePath,
+    productId: "eisen-region-insights",
   });
 
   for (const region of touchedRegions) {
