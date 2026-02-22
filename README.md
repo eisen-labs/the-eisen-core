@@ -26,6 +26,7 @@ flowchart TB
         UI["React UI"]
         Graph["Agent Graph"]
         Observer["Observability"]
+        Telemetry["Paid.ai Telemetry"]
         LibSQL[("LibSQL DB<br/>Per Workspace<br/>Repo Context / Commits")]
     end
 
@@ -42,6 +43,7 @@ flowchart TB
     Orchestrator -->|"Build prompts from"| LibSQL
     Graph -->|"Log execution"| Observer
     UI -->|"Display agent state"| Observer
+    Observer -->|"Emit metrics"| Telemetry
 ```
 
 ## Package Roles
@@ -117,6 +119,8 @@ flowchart TB
 **Smart Orchestration**: Agents coordinate without overlap by checking workspace state in local DB.
 
 **Observability**: Full visibility into agent decisions, tool calls, and execution flow.
+
+**Telemetry Integration**: Optional agent monitoring powered by Paid.ai for cost tracking, performance metrics, and execution insights.
 
 **API Key Verification**: Core verifies keys against @auth/ service before executing agents.
 
