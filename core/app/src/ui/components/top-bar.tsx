@@ -6,6 +6,7 @@ import type { AgentInfo } from "../state";
 export interface TopBarCb {
   onSelect(id: string): void;
   onAdd(): void;
+  onClose(id: string): void;
 }
 
 const TAB = "flex items-center gap-2 px-3 h-8 cursor-pointer shrink-0 rounded-lg text-sm";
@@ -55,9 +56,23 @@ export class TopBar {
           style={{ background: a.color }}
         />
       ) as HTMLElement;
+      const closeBtn = (
+        <button
+          type="button"
+          className="w-4 h-4 shrink-0 bg-transparent border-none flex items-center justify-center cursor-pointer text-muted hover:text-foreground rounded opacity-0 group-hover:opacity-100 leading-none text-base"
+        >
+          ×
+        </button>
+      ) as HTMLButtonElement;
+      closeBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.cb.onClose(a.instanceId);
+      });
+      tab.className = `${active ? TAB_ON : TAB_OFF} group`;
       tab.append(
         dot,
         (<span className="whitespace-nowrap overflow-hidden text-ellipsis">{a.displayName}</span>) as HTMLElement,
+        closeBtn,
       );
       tab.addEventListener("click", () => this.select(a.instanceId));
       this.strip.append(tab);
@@ -77,7 +92,7 @@ export class TopBar {
     this.pending?.remove();
     this.pending = null;
     this.selected = id;
-    for (const [k, el] of this.tabs) el.className = k === id ? TAB_ON : TAB_OFF;
+    for (const [k, el] of this.tabs) el.className = `${k === id ? TAB_ON : TAB_OFF} group`;
     this.cb.onSelect(id);
   }
 

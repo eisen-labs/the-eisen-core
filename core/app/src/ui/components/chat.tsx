@@ -169,6 +169,11 @@ export class Chat {
     this.pickerView.append(spacer, list);
   }
 
+  removeAgent(id: string): void {
+    this.msgMap.delete(id);
+    this.metaMap.delete(id);
+  }
+
   setMeta(meta: SessionMeta, id?: string): void {
     const key = id || this.activeId;
     if (key) this.metaMap.set(key, meta);

@@ -178,6 +178,10 @@ class Eisen {
           this.topBar.showPending("New chat");
           this.chat.showAgentPicker();
         },
+        onClose: (id) => {
+          this.chat.removeAgent(id);
+          ipc.send({ type: "closeInstance", instanceKey: id });
+        },
       });
 
       this.chat = new Chat({
@@ -358,7 +362,6 @@ class Eisen {
 
   private rerender(): void {
     this.renderer.render(this.state, this.selectedId, this.selectedIds);
-    this.topBar.apply(this.state.agents);
   }
 
   private handleMessage(msg: HostMessage): void {
